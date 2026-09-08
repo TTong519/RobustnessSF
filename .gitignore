@@ -1,2 +1,9 @@
 .planning/
 .DS_Store
+.claude/
+.venv/
+runs/
+__pycache__/
+*.pyc
+uv.lock.tmp
+.gsd/

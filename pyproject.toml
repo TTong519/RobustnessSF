@@ -1,0 +1,27 @@
+[project]
+name = "so100rob"
+version = "0.1.0"
+description = "SO-ARM100 RL robustness experiment: MuJoCo pick-and-place env, perturbation stack, and evaluation harness"
+requires-python = ">=3.12"
+dependencies = [
+    "mujoco==3.12.0",
+    "gymnasium==1.3.0",
+    "imageio==2.37.4",
+    "numpy==2.5.2",
+    "torch==2.14.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/so100rob"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

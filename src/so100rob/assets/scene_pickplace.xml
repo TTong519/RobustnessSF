@@ -1,0 +1,49 @@
+<!--
+  L1 task scene for the SO-ARM100 pick-and-place experiment.
+
+  Include-and-extend composition: the upstream robot model is included
+  READ-ONLY (trs_so_arm100/so_arm100.xml is a pinned, reviewed third-party
+  dependency — never edit it; every scene change goes in this file).
+
+  Verified MJCF merge semantics (Phase 1 research, Pattern 1): scene-level
+  <option> attributes win (timestep, integrator) while upstream settings are
+  preserved (cone="elliptic" impratio="10"); the <compiler meshdir> override is
+  REQUIRED because upstream meshdir="assets/" resolves relative to THIS file's
+  directory (three levels above the repo-root model dir).
+-->
+<mujoco model="scene_pickplace">
+  <include file="../../../trs_so_arm100/so_arm100.xml"/>
+  <compiler meshdir="../../../trs_so_arm100/assets"/>
+  <option timestep="0.002" integrator="implicitfast"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <global offwidth="256" offheight="256"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" name="groundplane" builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- One fixed third-person/overhead camera (placement hand-tuned later via
+         the mjpython viewer; looks along its local -z toward the workspace). -->
+    <camera name="overhead" pos="0.35 -0.55 0.50" quat="0.842291 0.365448 0.157707 0.363486" fovy="60"/>
+
+    <!-- Fixed place-goal (D-02): 10 cm to the +x side of the spawn patch center. -->
+    <site name="goal_site" pos="0.10 -0.22 0.015" size="0.01" rgba="1 0 0 0.6"/>
+
+    <!-- Pick cube (D-03): 3 cm box, freejoint; freejoint qpos drives the actual
+         spawn (env reset overwrites it — the home keyframe zero-pads the cube
+         to world origin). pos below is only the compile-time default. -->
+    <body name="cube" pos="0 -0.227 0.0155">
+      <freejoint name="cube_joint"/>
+      <geom name="cube_geom" type="box" size="0.015 0.015 0.015" mass="0.01" condim="4"
+            friction="1 0.005 0.0001" rgba="0.9 0.6 0.1 1"/>
+    </body>
+  </worldbody>
+</mujoco>
