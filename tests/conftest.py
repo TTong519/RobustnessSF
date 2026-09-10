@@ -44,3 +44,28 @@ def render_env():
     env_.reset(seed=0)
     yield env_
     env_.close()
+
+
+@pytest.fixture()
+def grid_env():
+    """Grid-mode env (frozen 25-spawn seed file; options={"spawn_index": i}).
+
+    Function-scoped: spawn-reproducibility tests RESET with different
+    indices, so instances are never shared across tests.
+    """
+    env_ = SO100PickPlaceEnv(spawn_mode="grid")
+    env_.reset(seed=0)
+    yield env_
+    env_.close()
+
+
+@pytest.fixture()
+def continuous_env():
+    """Continuous-mode env (fresh uniform patch sample per reset, D-12).
+
+    Function-scoped: reseeding per reset mutates env state.
+    """
+    env_ = SO100PickPlaceEnv(spawn_mode="continuous")
+    env_.reset(seed=0)
+    yield env_
+    env_.close()
