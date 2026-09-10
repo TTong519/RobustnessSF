@@ -126,8 +126,12 @@ class SO100PickPlaceEnv(MujocoEnv):
         # frame_skip values never assert-fail against a stale class-level fps.
         self.metadata = {**SO100PickPlaceEnv.metadata, "render_fps": int(round(1 / self.dt))}
 
-        # Sim-second episode cap (ENV-04): derived from dt so different
-        # frame_skip values yield identical sim-time episodes (D-07).
+        # Sim-second episode cap (ENV-04): episodes are defined in sim
+        # seconds, derived from dt so different frame_skip values yield
+        # identical sim-time episodes (D-07). frame_skip itself is
+        # construction-only — a different control rate is a different env
+        # instance, never a runtime mutation.
+        self.episode_sim_seconds = episode_sim_seconds
         self.max_episode_steps = int(np.ceil(episode_sim_seconds / self.dt))
 
         # Reset options stash: gymnasium 1.3.0's MujocoEnv.reset() accepts
