@@ -77,6 +77,12 @@ GOAL_POS: tuple[float, float, float] = (0.10, -0.22, 0.015)
 SPAWN_PATCH_X: tuple[float, float] = (-0.025, 0.025)
 SPAWN_PATCH_Y: tuple[float, float] = (-0.252, -0.202)
 
+# Frozen spawn protocol (D-09/D-10/D-11): the 25 evaluation spawns are
+# checked-in DATA, never re-derived at runtime. The env loads this file
+# verbatim; the Phase 5 protocol freeze references it by hash.
+SPAWN_GRID_SIZE: int = 25
+SPAWN_SEEDS_PATH: Path = Path(__file__).resolve().parents[2] / "config" / "spawn_seeds.json"
+
 # Default spawn: patch center, ~0.5 mm above the floor (settle protocol).
 SPAWN_CENTER: tuple[float, float, float] = (0.0, -0.227, 0.0155)
 SPAWN_Z: float = 0.0155

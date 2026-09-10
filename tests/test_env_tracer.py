@@ -31,8 +31,13 @@ def test_constructs_with_pinned_timestep(env):
 
 
 def test_reset_spawns_settled_cube_at_patch_center(env):
-    """Test 2: reset(seed=0) settles the cube at rest on the patch-center spawn."""
-    env.reset(seed=0)
+    """Test 2: reset settles the cube at rest on the patch-center spawn.
+
+    Plan 01-02 froze the grid protocol: default reset uses spawn_index 0,
+    so the patch center (SPAWN_CENTER) must be requested explicitly — it is
+    grid entry 12 of config/spawn_seeds.json.
+    """
+    env.reset(seed=0, options={"spawn_index": 12})
 
     cube_id = mujoco_id(env, constants.CUBE_JOINT)
     adr = env.model.jnt_qposadr[cube_id]

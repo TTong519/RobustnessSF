@@ -17,6 +17,10 @@ physics timestep is pinned in the scene (0.002 s) and a "rate change" is
 exactly a decimation change, never a model change.
 """
 
+import json
+import math
+from pathlib import Path
+
 import mujoco
 import numpy as np
 from gymnasium import spaces
@@ -27,6 +31,52 @@ from so100rob import constants as C
 # Minimal Phase 1 observation: qpos (13) + qvel (12) + 2D XY offset of the
 # cube center from the goal position.
 _OBS_DIM = 13 + 12 + 2
+
+
+def load_spawn_grid(path: Path | str) -> np.ndarray:
+    """Load and schema-validate the frozen 25-spawn seed grid (D-11, T-01-03).
+
+    The evaluation spawn protocol is checked-in DATA: this function reads it
+    verbatim and never re-derives positions. A missing, empty, or malformed
+    file raises a clear ValueError citing the path and the reason — the env
+    must fail loudly rather than silently proceed with a broken protocol.
+    """
+    path = Path(path)
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        raise ValueError(f"spawn seed file not found: {path}") from None
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"malformed spawn seed file {path}: not valid JSON ({exc})") from None
+
+    entries = raw.get("spawns") if isinstance(raw, dict) else raw
+    expected = C.SPAWN_GRID_SIZE
+    if not isinstance(entries, list) or len(entries) != expected:
+        found = len(entries) if isinstance(entries, list) else type(entries).__name__
+        raise ValueError(f"{path}: expected exactly {expected} spawn entries, found {found}")
+
+    grid = np.zeros((expected, 3), dtype=np.float64)
+    for i, entry in enumerate(entries):
+        try:
+            coords = [float(v) for v in entry]
+        except (TypeError, ValueError):
+            raise ValueError(f"{path}: spawn entry {i} is not a sequence of numbers: {entry!r}") from None
+        if len(coords) != 3:
+            raise ValueError(f"{path}: spawn entry {i} must have exactly 3 coordinates, got {len(coords)}")
+        if not all(math.isfinite(v) for v in coords):
+            raise ValueError(f"{path}: spawn entry {i} has non-finite coordinates: {entry!r}")
+        x, y, _ = coords
+        if not C.SPAWN_PATCH_X[0] <= x <= C.SPAWN_PATCH_X[1]:
+            raise ValueError(
+                f"{path}: spawn entry {i} x={x} outside the patch x-bounds {C.SPAWN_PATCH_X}"
+            )
+        if not C.SPAWN_PATCH_Y[0] <= y <= C.SPAWN_PATCH_Y[1]:
+            raise ValueError(
+                f"{path}: spawn entry {i} y={y} outside the patch y-bounds {C.SPAWN_PATCH_Y}"
+            )
+        grid[i] = coords
+    return grid
 
 
 class SO100PickPlaceEnv(MujocoEnv):
@@ -44,8 +94,22 @@ class SO100PickPlaceEnv(MujocoEnv):
         width: int = 64,
         height: int = 64,
         spawn_mode: str = "grid",
+        spawn_seeds_path: Path | str | None = None,
         episode_sim_seconds: float = C.EPISODE_SIM_SECONDS,
     ) -> None:
+        # Spawn mode + seed-file validation BEFORE the (slow) model compile:
+        # a malformed frozen-data file fails fast and loudly (T-01-03).
+        if spawn_mode not in ("grid", "continuous"):
+            raise ValueError(
+                f"unsupported spawn_mode: {spawn_mode!r} (expected 'grid' or 'continuous')"
+            )
+        self.spawn_mode = spawn_mode
+        if spawn_mode == "grid":
+            self.spawn_seeds_path = (
+                Path(spawn_seeds_path) if spawn_seeds_path is not None else C.SPAWN_SEEDS_PATH
+            )
+            self._spawn_grid = load_spawn_grid(self.spawn_seeds_path)
+
         super().__init__(
             model_path=str(C.SCENE_XML_PATH),
             frame_skip=frame_skip,
@@ -66,11 +130,10 @@ class SO100PickPlaceEnv(MujocoEnv):
         # frame_skip values yield identical sim-time episodes (D-07).
         self.max_episode_steps = int(np.ceil(episode_sim_seconds / self.dt))
 
-        # Phase 1: grid mode always spawns at the patch center (the checked-in
-        # 25-spawn seed file lands in Plan 02; continuous mode in a later plan).
-        if spawn_mode not in ("grid",):
-            raise ValueError(f"unsupported spawn_mode: {spawn_mode!r}")
-        self.spawn_mode = spawn_mode
+        # Reset options stash: gymnasium 1.3.0's MujocoEnv.reset() accepts
+        # options but does NOT forward them into reset_model() — we capture
+        # them here so reset_model can honor options={"spawn_index": i}.
+        self._reset_options: dict | None = None
 
         # Cached cube joint addressing (constant for the compiled model).
         self._cube_joint_id = mujoco.mj_name2id(
@@ -104,6 +167,42 @@ class SO100PickPlaceEnv(MujocoEnv):
         self.do_simulation(action, self.frame_skip)
         return self._get_obs(), 0.0, False, False, {}
 
+    def reset(
+        self,
+        *,
+        seed: int | None = None,
+        options: dict | None = None,
+    ):
+        """Capture reset options, then defer to MujocoEnv.reset.
+
+        gymnasium 1.3.0's MujocoEnv.reset() swallows ``options`` (it never
+        reaches reset_model), so grid-mode spawn selection needs this stash.
+        """
+        self._reset_options = options
+        return super().reset(seed=seed, options=options)
+
+    def _sample_spawn(self) -> tuple[float, float, float]:
+        """Select the cube spawn position for this reset (grid or continuous).
+
+        Grid mode (evaluation + physics gate): spawn_index i maps verbatim to
+        file entry i of the frozen seed grid (D-11) — order-stable, no
+        runtime re-derivation. Continuous mode (baseline training, D-12):
+        a fresh uniform sample over the patch from the env's seeded
+        generator.
+        """
+        options = self._reset_options or {}
+        if self.spawn_mode == "grid":
+            idx = options.get("spawn_index", 0)
+            if isinstance(idx, bool) or not isinstance(idx, (int, np.integer)):
+                raise ValueError(f"spawn_index must be an int, got {idx!r}")
+            if not 0 <= idx < C.SPAWN_GRID_SIZE:
+                raise ValueError(f"spawn_index {idx} out of range [0, {C.SPAWN_GRID_SIZE})")
+            x, y, z = (float(v) for v in self._spawn_grid[idx])
+            return x, y, z
+        x = float(self.np_random.uniform(C.SPAWN_PATCH_X[0], C.SPAWN_PATCH_X[1]))
+        y = float(self.np_random.uniform(C.SPAWN_PATCH_Y[0], C.SPAWN_PATCH_Y[1]))
+        return x, y, C.SPAWN_Z
+
     def reset_model(self) -> np.ndarray:
         """Keyframe reset + explicit cube spawn + settle.
 
@@ -111,7 +210,8 @@ class SO100PickPlaceEnv(MujocoEnv):
           1. mj_resetDataKeyframe(home) — sets BOTH qpos and ctrl;
              the cube freejoint pose comes back zero-padded to world origin
              (half inside the floor).
-          2. Overwrite cube qpos (w-first quaternion, fixed yaw per D-03) and
+          2. Overwrite cube qpos with the selected spawn (grid entry or
+             continuous sample; w-first quaternion, fixed yaw per D-03) and
              zero the cube qvel.
           3. mj_forward, then SETTLE_STEPS raw physics steps — settle is not
              a control step, so raw mj_step, not do_simulation.
@@ -121,7 +221,8 @@ class SO100PickPlaceEnv(MujocoEnv):
         home_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, C.HOME_KEY)
         mujoco.mj_resetDataKeyframe(self.model, self.data, home_id)
 
-        self.data.qpos[self._cube_qposadr : self._cube_qposadr + 3] = C.SPAWN_CENTER
+        x, y, z = self._sample_spawn()
+        self.data.qpos[self._cube_qposadr : self._cube_qposadr + 3] = (x, y, z)
         self.data.qpos[self._cube_qposadr + 3 : self._cube_qposadr + 7] = (1.0, 0.0, 0.0, 0.0)
         self.data.qvel[self._cube_dofadr : self._cube_dofadr + 6] = 0.0
 
