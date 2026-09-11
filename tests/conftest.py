@@ -69,3 +69,27 @@ def continuous_env():
     env_.reset(seed=0)
     yield env_
     env_.close()
+
+
+@pytest.fixture(scope="module")
+def gate_env():
+    """Grid-mode env for the ENV-06 physics-gate integration suite.
+
+    Constructed WITHOUT render_mode — the gate is metric-collection and is
+    never recorded (timing discipline). Module-scoped: every parametrized
+    case opens with its own reset(options={"spawn_index": i}), so sharing
+    one instance across the 25 cases is safe; the reset-first contract is
+    asserted by the tests themselves.
+    """
+    env_ = SO100PickPlaceEnv(spawn_mode="grid")
+    yield env_
+    env_.close()
+
+
+@pytest.fixture()
+def gate_params():
+    """The tuned default TrajectoryParams (Plan 01-03 Task 2 closed-loop
+    tuning result — the values that achieved 25/25 on the gate)."""
+    from so100rob.scripted_policy import TrajectoryParams
+
+    return TrajectoryParams()
