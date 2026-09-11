@@ -94,7 +94,9 @@ def test_jaw_values_within_ctrlrange(env):
     params = TrajectoryParams()
     jaw_idx = _actuator_id(env, "Jaw")
     lo, hi = env.model.actuator_ctrlrange[jaw_idx]
-    assert (lo, hi) == (-0.174, 1.75)
+    # Verified Jaw ctrlrange [-0.174, 1.75] (RESEARCH.md Pitfall 3); the
+    # compiled model carries sub-1e-15 representation noise, so approx.
+    assert (lo, hi) == pytest.approx((-0.174, 1.75))
 
     seq = build_trajectory(env.model, env.data, _cube_pose(env), np.asarray(C.GOAL_POS), params)
 
