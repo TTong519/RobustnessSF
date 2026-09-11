@@ -94,3 +94,7 @@ CUBE_HALF_SIZE: float = 0.015
 # qvel norm ~1.75e-9).
 SETTLE_STEPS: int = 250
 REST_QVEL_TOL: float = 1e-6
+
+# "Resting on the floor" (D-04, Plan 01-03): the settled 3 cm cube sits at
+# z ~= 0.0149 (verified); the accepted band brackets contact-height slop.
+CUBE_REST_Z_RANGE: tuple[float, float] = (0.013, 0.017)

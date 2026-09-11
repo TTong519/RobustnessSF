@@ -223,12 +223,33 @@ def _validate_params(params: TrajectoryParams, ctx: _ArmAddressing, model) -> No
             raise ValueError(f"{knob}={v} outside the Jaw ctrlrange [{lo}, {hi}]")
 
 
+def resting_at_goal(cube_pos, cube_qvel) -> bool:
+    """The D-04 success predicate, pinned ONCE for every consumer.
+
+    "Successfully placed" = cube center within SUCCESS_TOLERANCE_XY (XY) of
+    the goal site AND resting on the floor (cube qvel norm below
+    REST_QVEL_TOL and z within CUBE_REST_Z_RANGE). The gate runner, the
+    ENV-06 integration test, and the Phase 2 stage machine all evaluate
+    placement through THIS function — never a local redefinition (T-01-05).
+    """
+    pos = np.asarray(cube_pos, dtype=float).reshape(-1)
+    vel = np.asarray(cube_qvel, dtype=float).reshape(-1)
+    xy_err = float(np.linalg.norm(pos[:2] - np.asarray(C.GOAL_POS[:2])))
+    return (
+        xy_err <= C.SUCCESS_TOLERANCE_XY
+        and float(np.linalg.norm(vel)) < C.REST_QVEL_TOL
+        and C.CUBE_REST_Z_RANGE[0] <= pos[2] <= C.CUBE_REST_Z_RANGE[1]
+    )
+
+
 def build_trajectory(
     model,
     data,
     cube_pose,
     goal_pos,
     params: TrajectoryParams | None = None,
+    *,
+    debug: dict | None = None,
 ) -> list[tuple[np.ndarray, str]]:
     """Build the spawn-aware grasp-lift-place action sequence (D-05).
 
@@ -245,6 +266,11 @@ def build_trajectory(
 
     Side-effect-free on ``data``: state is snapshotted, IK runs on the
     snapshot, and the state is restored before returning.
+
+    If ``debug`` is a dict, it is populated with per-waypoint IK residuals
+    ("ik_residual" -> {label -> (3,) target-minus-achieved grasp-point
+    error norm, m}) for the gate's per-spawn diagnostics. Optional and
+    purely observational.
     """
     params = params if params is not None else TrajectoryParams()
     cube = np.asarray(cube_pose, dtype=float).reshape(-1)
@@ -265,20 +291,29 @@ def build_trajectory(
         for name, q in zip(C.JOINT_NAMES, C.HOME_QPOS):
             data.qpos[ctx.qadr[name]] = q
 
-        def solve(target_xyz: np.ndarray, jaw_ctrl: float) -> np.ndarray:
-            return _solve_ik(model, data, target_xyz, params, jaw_ctrl, ctx)
+        def solve(label: str, target_xyz: np.ndarray, jaw_ctrl: float) -> np.ndarray:
+            action = _solve_ik(model, data, target_xyz, params, jaw_ctrl, ctx)
+            if debug is not None:
+                residual = float(np.linalg.norm(target_xyz - grasp_point(model, data)))
+                debug.setdefault("ik_residual_m", {})[label] = residual
+            return action
 
-        pre_grasp = solve(cube_xyz + np.array([0, 0, params.pre_grasp_clearance]),
+        pre_grasp = solve("pre_grasp",
+                          cube_xyz + np.array([0, 0, params.pre_grasp_clearance]),
                           params.jaw_open_ctrl)
-        descend = solve(cube_xyz + np.array([0, 0, params.descend_height]),
+        descend = solve("descend",
+                        cube_xyz + np.array([0, 0, params.descend_height]),
                         params.jaw_open_ctrl)
         close = descend.copy()
         close[ctx.jaw_act] = params.jaw_closed_ctrl
-        lift = solve(cube_xyz + np.array([0, 0, params.lift_height]),
+        lift = solve("lift",
+                     cube_xyz + np.array([0, 0, params.lift_height]),
                      params.jaw_closed_ctrl)
-        transit = solve(goal_xyz + np.array([0, 0, params.transit_height]),
+        transit = solve("transit",
+                        goal_xyz + np.array([0, 0, params.transit_height]),
                         params.jaw_closed_ctrl)
-        place = solve(goal_xyz + np.array([0, 0, params.descend_height]),
+        place = solve("place",
+                      goal_xyz + np.array([0, 0, params.descend_height]),
                       params.jaw_closed_ctrl)
         release = place.copy()
         release[ctx.jaw_act] = params.jaw_open_ctrl
