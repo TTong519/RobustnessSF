@@ -11,6 +11,7 @@ discipline (Pitfall 2: timeout is truncation, NEVER termination).
 
 import mujoco
 import numpy as np
+import pytest
 
 from so100rob import constants as C
 from so100rob.scripted_policy import POST_RELEASE_SETTLE_STEPS, build_trajectory
@@ -77,7 +78,7 @@ def test_happy_path_flips_all_flags_strictly_in_order(gate_env, gate_params):
     assert C.GRASP_WINDOW_STEPS == 5
     assert C.SUCCESS_TOLERANCE_XY == 0.02
 
-    steps, _ = _roll_happy_path(gate_env, gate_params)
+    steps, phi_0 = _roll_happy_path(gate_env, gate_params)
     assert len(steps) == gate_env.max_episode_steps == 200, (
         "160 trajectory steps + 40 settle = exactly the 200-step episode cap"
     )
@@ -119,6 +120,51 @@ def test_happy_path_flips_all_flags_strictly_in_order(gate_env, gate_params):
             f"step {i}: truncated must never fire on the 200-step success "
             f"rollout (place flips within the settle tail)"
         )
+
+    # --- Reward contract (Task 2, D-05/D-06/D-07) ---
+    # phi_0 is the potential seeded at reset (env._prev_phi); the recorded
+    # series is phi_1..phi_T.
+    assert phi_0 is not None and np.isfinite(phi_0), (
+        "reset must seed _prev_phi so the first step's shaping is a true "
+        "potential difference, not a jump bonus"
+    )
+    phis = [phi_0] + [info["reward_phi"] for (_r, _t, _tr, info) in steps]
+    cumulative_shaping = 0.0
+    terminal_steps = []
+    for i, (step_reward, _term, _trunc, info) in enumerate(steps):
+        for key in ("reward_shaping", "reward_time_penalty", "reward_terminal", "reward_phi"):
+            assert key in info, f"step {i}: info missing reward key {key!r}"
+            assert np.isfinite(info[key]), f"step {i}: info[{key!r}] not finite"
+        assert np.isfinite(step_reward), f"step {i}: returned reward not finite"
+        # exact per-step shaping arithmetic against the recorded Phi series
+        assert info["reward_shaping"] == pytest.approx(
+            C.REWARD_GAMMA * info["reward_phi"] - phis[i], abs=1e-9
+        ), f"step {i}: reward_shaping must be gamma*phi_next - phi_prev (D-05)"
+        assert info["reward_time_penalty"] == -C.TIME_PENALTY
+        cumulative_shaping += info["reward_shaping"]
+        if info["reward_terminal"] == C.TERMINAL_PLACE_BONUS:
+            terminal_steps.append(i)
+        else:
+            assert info["reward_terminal"] == 0.0, (
+                f"step {i}: reward_terminal must be 0 or exactly the bonus"
+            )
+    # the bonus lands EXACTLY once — on the terminated (place-flip) step
+    assert terminal_steps == [place_i], (
+        f"terminal bonus must be paid exactly once at the place step {place_i}, "
+        f"paid at {terminal_steps}"
+    )
+    # telescoping closed form computed from the recorded Phi series (proof
+    # the composed reward is genuinely potential-based — criterion 3)
+    T = len(steps)
+    closed_form = (
+        C.REWARD_GAMMA * phis[T]
+        - phis[0]
+        + (C.REWARD_GAMMA - 1) * sum(phis[1:T])
+    )
+    assert cumulative_shaping == pytest.approx(closed_form, abs=1e-6), (
+        f"cumulative shaping {cumulative_shaping} != telescoping closed form "
+        f"{closed_form} — the dense term must telescope"
+    )
 
 
 def test_timeout_is_truncation_never_termination(gate_env):
