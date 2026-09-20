@@ -34,6 +34,9 @@ def _roll_happy_path(env, params):
     Task 2 — None until then).
     """
     env.reset(seed=0, options={"spawn_index": 0})
+    # Capture the reset-seeded prev-Phi BEFORE rolling — after the rollout
+    # env._prev_phi holds the last step's Phi, not the seed.
+    phi_0 = getattr(env, "_prev_phi", None)
     qadr, _ = _cube_addressing(env)
     cube_spawn = np.array(env.data.qpos[qadr : qadr + 3])
     seq = build_trajectory(env.model, env.data, cube_spawn, C.GOAL_POS, params)
@@ -64,7 +67,6 @@ def _roll_happy_path(env, params):
     for _ in range(tail_steps):
         _capture(last_action)
 
-    phi_0 = getattr(env, "_prev_phi", None)
     return steps, phi_0
 
 

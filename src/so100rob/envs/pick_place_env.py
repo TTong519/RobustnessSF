@@ -31,6 +31,7 @@ from gymnasium import spaces
 from gymnasium.envs.mujoco import MujocoEnv
 
 from so100rob import constants as C
+from so100rob import reward
 from so100rob import stages
 from so100rob.scripted_policy import grasp_point
 
@@ -168,6 +169,8 @@ class SO100PickPlaceEnv(MujocoEnv):
         # attributes are defined even before the first reset.
         self._stage = stages.StageState()
         self._elapsed_steps = 0
+        self._terminal_paid = False
+        self._prev_phi = 0.0
 
     # ------------------------------------------------------------------
     # Observations
@@ -231,10 +234,20 @@ class SO100PickPlaceEnv(MujocoEnv):
         terminated = bool(self._stage.place)
         truncated = (not terminated) and (self._elapsed_steps >= self.max_episode_steps)
 
+        # Potential-based stage-gated reward (D-05/D-06): one-shot terminal
+        # latch — first_place is True only on the step place first sets, so
+        # TERMINAL_PLACE_BONUS lands exactly once, on the terminated step.
+        first_place = self._stage.place and not self._terminal_paid
+        self._terminal_paid = bool(self._stage.place)
+        phi_now = reward.potential(stages.stage_index(self._stage), readout.approach_dist_m)
+        step_reward, components = reward.compute(self._prev_phi, phi_now, first_place)
+        self._prev_phi = phi_now
+
         # Flat scalar info contract (cross-phase API: Phase 3 wrappers and
         # Phase 5 funnel metrics consume these keys BY NAME). is_success
         # mirrors the place flag EVERY step (Pitfall 7 — monotone episode
-        # view, never final-step-only).
+        # view, never final-step-only); reward components + Phi mirror into
+        # info per D-07 so audits attribute reward without recomputation.
         info: dict = {
             "stage_approach": bool(self._stage.approach),
             "stage_grasp": bool(self._stage.grasp),
@@ -243,7 +256,9 @@ class SO100PickPlaceEnv(MujocoEnv):
             "stage_index": stages.stage_index(self._stage),
             "is_success": bool(self._stage.place),
         }
-        return self._get_obs(), 0.0, terminated, truncated, info
+        info.update(components)
+        info["reward_phi"] = phi_now
+        return self._get_obs(), float(step_reward), terminated, truncated, info
 
     def reset(
         self,
@@ -316,11 +331,20 @@ class SO100PickPlaceEnv(MujocoEnv):
             "still-falling/bouncing spawn (Pitfall 7)"
         )
 
-        # Episode-local stage state: a FRESH machine on every reset (Pitfall
-        # 6 — flags, grasp-window counter, and the step counter must never
-        # leak across episodes; the env is reused across trajectories by the
-        # audit runner exactly as the physics gate reuses it across spawns).
+        # Episode-local stage/reward state: a FRESH machine on every reset
+        # (Pitfall 6 — flags, grasp-window counter, step counter, terminal
+        # latch, and the prev-Phi snapshot must never leak across episodes;
+        # the env is reused across trajectories by the audit runner exactly
+        # as the physics gate reuses it across spawns).
         self._stage = stages.StageState()
         self._elapsed_steps = 0
+        self._terminal_paid = False
+        # Seed prev-Phi at the home-pose approach distance so the FIRST
+        # step's shaping is a true potential difference, not a jump bonus.
+        # After the settle the arm sits at the home keyframe with home ctrl.
+        seed_readout = self._gather_readout(np.asarray(C.HOME_CTRL, dtype=float))
+        self._prev_phi = reward.potential(
+            stages.stage_index(self._stage), seed_readout.approach_dist_m
+        )
 
         return self._get_obs()

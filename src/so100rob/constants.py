@@ -140,3 +140,46 @@ GRASP_TRACK_TOL_M: float = 0.03
 # still counts — makes the momentary-contact negative control
 # deterministic). Script closed = 0.13 passes; open = 0.35 fails.
 GRASP_JAW_CLOSED_CTRL_MAX: float = 0.20
+
+# ---------------------------------------------------------------------------
+# Pinned reward constants (Phase 2 decisions D-05, D-06)
+# ---------------------------------------------------------------------------
+
+# Stage-indexed monotone potential Phi (D-05): index = stage_index (count of
+# True flags), Phi(s_0) = 0.0, total shapable potential = 1.0.
+STAGE_POTENTIALS: tuple[float, ...] = (0.0, 0.15, 0.35, 0.60, 1.0)
+
+# Hybrid approach sub-term weight (OQ-3 resolution): ONE small continuous
+# term — APPROACH_W * (1 - clamp(approach_dist / APPROACH_POTENTIAL_SCALE_M,
+# 0, 1)) — active only while stage_index < 2, keeps Phi informative before
+# any flag flips (RESEARCH A3) without threatening stage monotonicity (the
+# guard STAGE_POTENTIALS[1] + APPROACH_W <= STAGE_POTENTIALS[2] is
+# import-time validated). 0.05 = a small slice of the 1.0 shapable budget.
+APPROACH_W: float = 0.05
+
+# Distance normalizer for the approach sub-term [m]: the sub-term ramps to 0
+# as the horizontal gripper-to-cube distance grows past ~2x the spawn-patch
+# offset scale — round number, covers home-to-cube stand-off.
+APPROACH_POTENTIAL_SCALE_M: float = 0.20
+
+# Terminal place bonus (D-06 terminal dominance): 10x the 1.0 total shapable
+# potential, paid exactly ONCE on the step the place flag first sets —
+# dense shaping can never accumulate significantly without a stage flag
+# advancing (success criterion 3).
+TERMINAL_PLACE_BONUS: float = 10.0
+
+# Per-step time penalty (D-05): encourages brevity; SVRC field-guide scale.
+TIME_PENALTY: float = 0.01
+
+# MUST equal the Phase 4 PPO discount (Pitfall 1): the shaping term
+# gamma*Phi(s') - Phi(s) is policy-invariant ONLY when gamma matches the
+# learner's discount (Ng/Harada/Russell ICML 1999). SB3 PPO default
+# gamma=0.99 — Phase 4 must read its discount from THIS constant.
+REWARD_GAMMA: float = 0.99
+
+# Criterion-3 audit bounds (data consumed by 02-02's audit runner): a
+# full-flags-no-place episode earns at most this fraction of the terminal
+# bonus, and constant-(stage, Phi) windows accumulate at most
+# AUDIT_DENSE_FRACTION of it without a flag advance.
+FULL_FLAGS_NO_PLACE_MAX_FRACTION: float = 0.2
+AUDIT_DENSE_FRACTION: float = 0.01
