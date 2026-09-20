@@ -116,8 +116,13 @@ GRASP_WINDOW_STEPS: int = 5
 # Approach threshold (D-03): horizontal grasp-point-to-cube-center distance
 # at or below this sets the approach flag. Round tuning value: comfortably
 # above the scripted trajectory's IK residual (~mm) at the pre-grasp/descend
-# waypoints, well below the home-pose stand-off (~15 cm) — a coarse
-# "the gripper is over the cube" semantic, not a tight script fit.
+# waypoints. MEASURED (Task 3, Rule 1 doc fix): at the home pose the pad
+# midpoint sits ~2.9 cm horizontally from the spawn-0 cube center — BELOW
+# this threshold — so the approach flag legitimately sets at episode start;
+# it is a coarse "the gripper is near the cube" semantic, NOT a
+# from-home-to-cube progress signal (the pre-grasp stand-off claim in the
+# original Phase 2 research was wrong). Downstream consumers must not read
+# approach == False at t=0.
 APPROACH_DIST_M: float = 0.05
 
 # Lift margin (D-03): the cube counts as lifted once its z exceeds the

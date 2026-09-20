@@ -187,3 +187,97 @@ def test_timeout_is_truncation_never_termination(gate_env):
         else:
             assert truncated, "truncated must be True at the step cap (timeout)"
     assert not terminated, "even at the cap, timeout is truncation, never termination"
+
+
+def _episode_summary(steps):
+    """First-flip index per stage flag + the terminal-bonus payment steps."""
+    first_flip = {}
+    terminal_steps = []
+    for i, (_r, _term, _trunc, info) in enumerate(steps):
+        for key in _STAGE_FLAG_KEYS:
+            if info.get(key) and key not in first_flip:
+                first_flip[key] = i
+        if info.get("reward_terminal") == C.TERMINAL_PLACE_BONUS:
+            terminal_steps.append(i)
+    return first_flip, terminal_steps
+
+
+def test_consecutive_episodes_clean_start(gate_env, gate_params):
+    """Pitfall 6 — the exact leak scenario: after a SUCCESSFUL episode, the
+    next episode on the SAME env instance must start clean and pay the
+    terminal bonus exactly once again. A leaked flag, grasp-window counter,
+    step counter, terminal latch, or prev-Phi snapshot fails here — the
+    audit runner (02-02) reuses one env across trajectories exactly like
+    the physics gate reuses it across spawns, so reset hygiene is
+    load-bearing.
+
+    Leak fingerprints this test catches: a leaked _stage would show
+    approach already True on the probe steps; a stale _terminal_paid would
+    show zero or two payments in run 2; a stale grasp_hold_counter could
+    flip grasp early; a stale _prev_phi would distort run 2's first-step
+    shaping.
+    """
+    env = gate_env
+
+    # --- Episode 1: the full happy path, must succeed ---
+    steps1, phi0_1 = _roll_happy_path(env, gate_params)
+    flips1, terminal1 = _episode_summary(steps1)
+    assert set(flips1) == set(_STAGE_FLAG_KEYS), f"episode 1 missing flags: {flips1}"
+    idx1 = [flips1[k] for k in _STAGE_FLAG_KEYS]
+    assert idx1 == sorted(idx1) and len(set(idx1)) == 4, (
+        f"episode 1 flips out of order: {flips1}"
+    )
+    assert terminal1 == [flips1["stage_place"]], (
+        f"episode 1 must pay the terminal bonus exactly once at place: {terminal1}"
+    )
+    assert steps1[-1][3]["is_success"], "episode 1 must end successful"
+
+    # --- Reset the SAME env instance (same spawn, same seed) and probe ---
+    # Measured baseline (Rule 1 deviation from the plan's "all four flags
+    # False"): at the home pose the pad midpoint sits ~2.87 cm horizontally
+    # from the spawn-0 cube center — BELOW the 5 cm approach threshold — so
+    # stage_approach legitimately reads True at episode start. That is
+    # physics, not state. The LEAK fingerprint is the other three flags and
+    # is_success: episode 1 ended with ALL FOUR flags True, so any leaked
+    # _stage or grasp-window latch shows grasp/lift/place True here, and a
+    # leaked place flag shows is_success True.
+    env.reset(seed=0, options={"spawn_index": 0})
+    home_action = np.asarray(C.HOME_CTRL, dtype=float)
+    for i in range(5):
+        _, _reward, terminated, truncated, info = env.step(home_action)
+        for key in ("stage_grasp", "stage_lift", "stage_place"):
+            assert not info[key], (
+                f"probe step {i}: {key} leaked across the reset — episode 1 "
+                "ended with every flag True, so any True here is stale state"
+            )
+        assert not info["is_success"], "a leaked place flag would read success"
+        assert info["stage_index"] == sum(
+            1 for k in _STAGE_FLAG_KEYS if info[k]
+        ), f"probe step {i}: stage_index must equal the count of True flags"
+        assert info["stage_index"] < 4, (
+            f"probe step {i}: stage_index {info['stage_index']} — the "
+            "end-of-episode-1 value 4 leaking means _stage survived the reset"
+        )
+        assert not terminated and not truncated
+
+    # --- Episode 2: the full happy path again on the same env ---
+    steps2, phi0_2 = _roll_happy_path(env, gate_params)
+    flips2, terminal2 = _episode_summary(steps2)
+    assert set(flips2) == set(_STAGE_FLAG_KEYS), f"episode 2 missing flags: {flips2}"
+    idx2 = [flips2[k] for k in _STAGE_FLAG_KEYS]
+    assert idx2 == sorted(idx2) and len(set(idx2)) == 4, (
+        f"episode 2 flips out of order: {flips2}"
+    )
+    assert terminal2 == [flips2["stage_place"]], (
+        f"episode 2 must pay the terminal bonus EXACTLY once again at place — "
+        f"a stale _terminal_paid latch shows zero, a leaked place flag shows "
+        f"two: {terminal2}"
+    )
+    assert steps2[-1][3]["is_success"], "episode 2 must end successful"
+    # Identical reset state (same seed, same spawn) must re-seed the IDENTICAL
+    # prev-Phi — a stale _prev_phi from episode 1's terminal step (Phi = 1.0)
+    # would differ here and distort episode 2's first-step shaping.
+    assert phi0_2 == phi0_1, (
+        f"episode 2's reset-seeded prev-Phi {phi0_2} != episode 1's {phi0_1} — "
+        "the snapshot leaked across the reset"
+    )
