@@ -465,7 +465,11 @@ def test_drop_outside_goal_sequence_self_validates(gate_env, gate_params):
     degenerate 'outside' goal would silently test nothing."""
     env = gate_env
     cube_spawn = _cube_spawn(env)
-    for bad_offset in (0.0, C.SUCCESS_TOLERANCE_XY):
+    # A strictly-inside offset (half the tolerance), NOT the exact boundary:
+    # in doubles, 0.10 + 0.02 == 0.12000000000000001 lands a hair OUTSIDE the
+    # tolerance, so the exact-boundary case is float-ambiguous and the recipe
+    # correctly declines to raise there (Rule 1 fix: knife-edge test input).
+    for bad_offset in (0.0, C.SUCCESS_TOLERANCE_XY / 2):
         with pytest.raises(ValueError, match="SUCCESS_TOLERANCE_XY"):
             drop_outside_goal_sequence(
                 env.model, env.data, cube_spawn, C.GOAL_POS, gate_params,

@@ -376,8 +376,13 @@ def positive_sequence(
     resting clause is only evaluable after the settle). Expected outcome:
     approach -> grasp -> lift -> place flip in strict order, is_success
     True from the place flip.
+
+    Side-effect-free on ``data`` (inherits build_trajectory's
+    snapshot/restore contract).
     """
-    raise NotImplementedError
+    seq = build_trajectory(model, data, cube_pose, goal_pos, params, debug=debug)
+    last_action = seq[-1][0]
+    return seq + [(last_action, "settle")] * POST_RELEASE_SETTLE_STEPS
 
 
 def momentary_contact_sequence(
@@ -399,7 +404,25 @@ def momentary_contact_sequence(
     stage_lift, stage_place and is_success never set — the multi-step
     verification window is the only path to the grasp flag.
     """
-    raise NotImplementedError
+    if close_steps < 1:
+        raise ValueError(f"close_steps must be >= 1, got {close_steps}")
+    if close_steps >= C.GRASP_WINDOW_STEPS:
+        raise ValueError(
+            f"close_steps={close_steps} must be strictly below "
+            f"GRASP_WINDOW_STEPS={C.GRASP_WINDOW_STEPS} — a momentary contact "
+            "that satisfies the verification window would not be a negative "
+            "control (D-09a, T-02-07)"
+        )
+    if retreat_steps < 1:
+        raise ValueError(f"retreat_steps must be >= 1, got {retreat_steps}")
+    seq = build_trajectory(model, data, cube_pose, goal_pos, params, debug=debug)
+    close_start = _label_indices(seq, "close")[0]
+    pre_grasp_actions = [seq[i][0] for i in _label_indices(seq, "pre_grasp")]
+    retreat_action = pre_grasp_actions[-1]
+    return (
+        seq[: close_start + close_steps]
+        + [(retreat_action, "retreat")] * retreat_steps
+    )
 
 
 def approach_retreat_sequence(
@@ -420,7 +443,13 @@ def approach_retreat_sequence(
     never un-set; the assertion is that grasp/lift/place/is_success stay
     False — Pitfall 4).
     """
-    raise NotImplementedError
+    if retreat_steps < 1:
+        raise ValueError(f"retreat_steps must be >= 1, got {retreat_steps}")
+    seq = build_trajectory(model, data, cube_pose, goal_pos, params, debug=debug)
+    close_start = _label_indices(seq, "close")[0]
+    pre_grasp_actions = [seq[i][0] for i in _label_indices(seq, "pre_grasp")]
+    retreat_action = pre_grasp_actions[-1]
+    return seq[:close_start] + [(retreat_action, "retreat")] * retreat_steps
 
 
 def drop_outside_goal_sequence(
@@ -441,4 +470,19 @@ def drop_outside_goal_sequence(
     honestly evaluable). Expected outcome: approach/grasp/lift True at the
     end, stage_place and is_success never set, terminated never True.
     """
-    raise NotImplementedError
+    goal = np.asarray(goal_pos, dtype=float).reshape(-1)
+    if goal.size < 2:
+        raise ValueError(f"goal_pos needs at least 2 coordinates, got {np.shape(goal_pos)}")
+    shifted_goal = goal.copy()
+    shifted_goal[0] += goal_offset_m
+    xy_offset = float(np.linalg.norm(shifted_goal[:2] - goal[:2]))
+    if xy_offset <= C.SUCCESS_TOLERANCE_XY:
+        raise ValueError(
+            f"goal_offset_m={goal_offset_m} leaves the drop point {xy_offset:.4f} m "
+            f"from the real goal — within SUCCESS_TOLERANCE_XY="
+            f"{C.SUCCESS_TOLERANCE_XY} — a degenerate 'outside' goal would "
+            "silently test nothing (D-09c, T-02-07)"
+        )
+    return positive_sequence(
+        model, data, cube_pose, shifted_goal, params, debug=debug
+    )
