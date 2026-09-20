@@ -332,3 +332,113 @@ def build_trajectory(
     seq.extend([(place, "descend")] * params.waypoint_dwell_steps)
     seq.extend([(release, "release")] * params.release_dwell_steps)
     return seq
+
+
+# ---------------------------------------------------------------------------
+# Verification-sequence recipes (Phase 2, D-08/D-09)
+#
+# Pure sequence TRANSFORMS over build_trajectory output: no new IK path, no
+# new contact modeling, no stepping. The negative controls are the
+# adversarial inputs of Phase 2 — hand-posed sequences engineered to look
+# like progress (contact without hold, approach without commit, motion
+# without goal). The stage machine must classify them as non-progress, and
+# the reward audit runner (D-10) rolls exactly these recipes, so they are
+# the single definition consumed by both the tests and the runner.
+# ---------------------------------------------------------------------------
+
+
+def _label_indices(seq: list[tuple[np.ndarray, str]], label: str) -> list[int]:
+    """All indices carrying ``label`` (build_trajectory emits contiguous runs).
+
+    Fails loudly on a missing label — a recipe whose source phase vanished
+    upstream must never silently produce a degenerate sequence (T-02-07).
+    """
+    idx = [i for i, (_a, lab) in enumerate(seq) if lab == label]
+    if not idx:
+        raise ValueError(f"no {label!r}-labeled step in the built trajectory")
+    return idx
+
+
+def positive_sequence(
+    model,
+    data,
+    cube_pose,
+    goal_pos,
+    params: TrajectoryParams | None = None,
+    *,
+    debug: dict | None = None,
+) -> list[tuple[np.ndarray, str]]:
+    """D-09 positive control: the gate-proven trajectory + settle tail.
+
+    build_trajectory's sequence plus POST_RELEASE_SETTLE_STEPS copies of
+    the final (release) action, labeled "settle" — the exact protocol the
+    Phase 1 physics gate proved places the cube 25/25 (the place flag's
+    resting clause is only evaluable after the settle). Expected outcome:
+    approach -> grasp -> lift -> place flip in strict order, is_success
+    True from the place flip.
+    """
+    raise NotImplementedError
+
+
+def momentary_contact_sequence(
+    model,
+    data,
+    cube_pose,
+    goal_pos,
+    params: TrajectoryParams | None = None,
+    *,
+    close_steps: int = 2,
+    retreat_steps: int = 20,
+    debug: dict | None = None,
+) -> list[tuple[np.ndarray, str]]:
+    """D-09a negative control: sub-window contact, then retreat.
+
+    The stock trajectory up to the close phase, only ``close_steps``
+    close-labeled steps (below GRASP_WINDOW_STEPS), then a retreat hold
+    on the pre-grasp hover action. Expected outcome: stage_grasp,
+    stage_lift, stage_place and is_success never set — the multi-step
+    verification window is the only path to the grasp flag.
+    """
+    raise NotImplementedError
+
+
+def approach_retreat_sequence(
+    model,
+    data,
+    cube_pose,
+    goal_pos,
+    params: TrajectoryParams | None = None,
+    *,
+    retreat_steps: int = 20,
+    debug: dict | None = None,
+) -> list[tuple[np.ndarray, str]]:
+    """D-09b negative control: approach and descend, then retreat.
+
+    The stock trajectory up to (excluding) the close phase — pre_grasp +
+    descend, jaw always open — then a retreat hold on the pre-grasp hover
+    action. Expected outcome: only stage_approach sets (monotone flags
+    never un-set; the assertion is that grasp/lift/place/is_success stay
+    False — Pitfall 4).
+    """
+    raise NotImplementedError
+
+
+def drop_outside_goal_sequence(
+    model,
+    data,
+    cube_pose,
+    goal_pos,
+    params: TrajectoryParams | None = None,
+    *,
+    goal_offset_m: float = 0.15,
+    debug: dict | None = None,
+) -> list[tuple[np.ndarray, str]]:
+    """D-09c negative control: full grasp-lift-place toward a shifted goal.
+
+    positive_sequence built toward goal_pos + (goal_offset_m, 0, 0) — well
+    outside SUCCESS_TOLERANCE_XY of the real goal — including the settle
+    tail (the cube must come to rest for the place predicate to be
+    honestly evaluable). Expected outcome: approach/grasp/lift True at the
+    end, stage_place and is_success never set, terminated never True.
+    """
+    raise NotImplementedError
