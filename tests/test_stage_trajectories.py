@@ -48,8 +48,19 @@ def _roll_happy_path(env, params):
         _capture(action)
     # Post-release settle tail (Pitfall 5): the place flag's resting clause
     # is only evaluable after the cube settles — hold the final arm config.
+    # The stock trajectory is 120 control steps (5 waypoint dwells x 20 +
+    # close 10 + release 10), so the hold runs to the episode CAP (80 steps,
+    # a superset of the mandatory 40-step settle) — the rollout is then
+    # exactly max_episode_steps and the truncated-never assertion proves
+    # terminated preempts truncation AT the cap (Rule 1 fix: the plan's
+    # "160 trajectory" arithmetic was off; the 200-step-rollout intent is
+    # preserved).
     last_action = seq[-1][0]
-    for _ in range(POST_RELEASE_SETTLE_STEPS):
+    tail_steps = env.max_episode_steps - len(seq)
+    assert tail_steps >= POST_RELEASE_SETTLE_STEPS, (
+        "the settle tail must fit inside the episode cap"
+    )
+    for _ in range(tail_steps):
         _capture(last_action)
 
     phi_0 = getattr(env, "_prev_phi", None)

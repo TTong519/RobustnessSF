@@ -1,14 +1,18 @@
-"""SO100PickPlaceEnv — Phase 1 walking-skeleton Gymnasium environment.
+"""SO100PickPlaceEnv — Gymnasium environment for the SO-ARM100 pick-and-place.
 
 Gymnasium MujocoEnv subclass over the L1 task scene
 (src/so100rob/assets/scene_pickplace.xml, which includes the read-only
-upstream SO-ARM100 model). Phase 1 scope is deliberately minimal:
+upstream SO-ARM100 model). Scope after Phase 2:
 
   * keyframe ("home") reset + explicit cube spawn + settle (verified recipe,
     research Pattern 2 — the keyframe zero-pads the cube to world origin,
     so the overwrite is MANDATORY)
-  * step() is a pure physics delegate — no reward, no stage flags, no
-    termination logic (Phase 2 scope)
+  * step() composes the Phase 2 stage machine + potential-based reward:
+    stage flags / stage_index / is_success / reward components / reward_phi
+    in info every step (flat scalar keys — the cross-phase contract for
+    Phases 3-5), terminated=True on the step the place flag first sets,
+    truncated=True at the step cap without success (timeout is truncation,
+    NEVER termination — PPO bootstrapping depends on the distinction)
   * observation is a minimal flat state vector — the full obs pipeline
     (images) is Phase 3 scope
 
@@ -27,6 +31,8 @@ from gymnasium import spaces
 from gymnasium.envs.mujoco import MujocoEnv
 
 from so100rob import constants as C
+from so100rob import stages
+from so100rob.scripted_policy import grasp_point
 
 # Minimal Phase 1 observation: qpos (13) + qvel (12) + 2D XY offset of the
 # cube center from the goal position.
@@ -146,7 +152,22 @@ class SO100PickPlaceEnv(MujocoEnv):
         self._cube_qposadr = self.model.jnt_qposadr[self._cube_joint_id]
         self._cube_dofadr = self.model.jnt_dofadr[self._cube_joint_id]
 
+        # Cached jaw actuator index, resolved BY NAME and cached once —
+        # never index the action vector by a guessed offset (the same
+        # fail-loudly name-resolution pattern as the cube addressing).
+        self._jaw_act_idx = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "Jaw"
+        )
+        if self._jaw_act_idx < 0:
+            raise ValueError("actuator 'Jaw' not found in compiled model")
+
         self._goal_xy = np.asarray(C.GOAL_POS[:2], dtype=np.float64)
+
+        # Episode-local stage/reward state placeholders — reset_model owns
+        # the authoritative clearing (Pitfall 6); these exist so the
+        # attributes are defined even before the first reset.
+        self._stage = stages.StageState()
+        self._elapsed_steps = 0
 
     # ------------------------------------------------------------------
     # Observations
@@ -167,9 +188,62 @@ class SO100PickPlaceEnv(MujocoEnv):
     # Gymnasium API
     # ------------------------------------------------------------------
 
+    def _gather_readout(self, action) -> stages.SimReadout:
+        """Snapshot the privileged kinematics the stage machine consumes.
+
+        Read from the cached name-resolved cube addresses plus
+        grasp_point(model, data) and the applied action's jaw ctrl. The
+        readout is guarded with np.isfinite asserts (threat T-02-01) —
+        NaN/Inf physics state fails loudly here instead of silently
+        becoming stage flags or reward.
+        """
+        cube_pos = np.array(self.data.qpos[self._cube_qposadr : self._cube_qposadr + 3])
+        cube_qvel = np.array(self.data.qvel[self._cube_dofadr : self._cube_dofadr + 6])
+        pad_midpoint = np.asarray(grasp_point(self.model, self.data), dtype=float)
+        jaw_ctrl_applied = float(np.asarray(action).reshape(-1)[self._jaw_act_idx])
+        approach_dist_m = float(np.linalg.norm(pad_midpoint[:2] - cube_pos[:2]))
+
+        assert all(
+            np.isfinite(v).all() if isinstance(v, np.ndarray) else np.isfinite(v)
+            for v in (cube_pos, cube_qvel, pad_midpoint)
+        ) and math.isfinite(jaw_ctrl_applied) and math.isfinite(approach_dist_m), (
+            "non-finite simulation state in the stage readout — NaN/Inf "
+            "physics must fail loudly, never poison stage flags/reward (T-02-01)"
+        )
+        return stages.SimReadout(
+            cube_pos=cube_pos,
+            cube_qvel=cube_qvel,
+            grasp_point=pad_midpoint,
+            jaw_ctrl_applied=jaw_ctrl_applied,
+            approach_dist_m=approach_dist_m,
+        )
+
     def step(self, action) -> tuple[np.ndarray, float, bool, bool, dict]:
         self.do_simulation(action, self.frame_skip)
-        return self._get_obs(), 0.0, False, False, {}
+        self._elapsed_steps += 1
+
+        readout = self._gather_readout(action)
+        stages.update(self._stage, readout)
+
+        # Timeout is truncation, NEVER termination (Pitfall 2 — PPO
+        # bootstrapping depends on the distinction); success terminates on
+        # the very step the place flag first sets.
+        terminated = bool(self._stage.place)
+        truncated = (not terminated) and (self._elapsed_steps >= self.max_episode_steps)
+
+        # Flat scalar info contract (cross-phase API: Phase 3 wrappers and
+        # Phase 5 funnel metrics consume these keys BY NAME). is_success
+        # mirrors the place flag EVERY step (Pitfall 7 — monotone episode
+        # view, never final-step-only).
+        info: dict = {
+            "stage_approach": bool(self._stage.approach),
+            "stage_grasp": bool(self._stage.grasp),
+            "stage_lift": bool(self._stage.lift),
+            "stage_place": bool(self._stage.place),
+            "stage_index": stages.stage_index(self._stage),
+            "is_success": bool(self._stage.place),
+        }
+        return self._get_obs(), 0.0, terminated, truncated, info
 
     def reset(
         self,
@@ -241,5 +315,12 @@ class SO100PickPlaceEnv(MujocoEnv):
             f"{cube_qvel_norm:.3e} >= {C.REST_QVEL_TOL:.3e} — never return a "
             "still-falling/bouncing spawn (Pitfall 7)"
         )
+
+        # Episode-local stage state: a FRESH machine on every reset (Pitfall
+        # 6 — flags, grasp-window counter, and the step counter must never
+        # leak across episodes; the env is reused across trajectories by the
+        # audit runner exactly as the physics gate reuses it across spawns).
+        self._stage = stages.StageState()
+        self._elapsed_steps = 0
 
         return self._get_obs()

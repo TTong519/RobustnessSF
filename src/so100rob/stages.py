@@ -20,10 +20,6 @@ Stage semantics (Phase 2 CONTEXT decisions):
     so100rob.scripted_policy, IMPORTED — never re-defined locally.
 
 Flags are monotone within an episode (D-04): once True, never un-set.
-
-RED-phase stub (Plan 02-01 Task 1): signatures below are final; bodies raise
-NotImplementedError so the suite fails on this stub by design, per the
-Phase 1 validated RED pattern.
 """
 
 from dataclasses import dataclass
@@ -66,15 +62,69 @@ class StageState:
 
 
 def _validate_constants() -> None:
-    """Fail-loudly check of the pinned stage constants (threat T-02-02)."""
-    raise NotImplementedError("RED stub (Plan 02-01 Task 1)")
+    """Fail-loudly check of the pinned stage constants (threat T-02-02).
+
+    A silently-loosened or malformed constant (window 0, negative tolerance)
+    would disable the stage gates without any test failure — so the module
+    refuses to import until every pinned value is valid, naming the
+    violated constant in the error.
+    """
+    if not isinstance(C.GRASP_WINDOW_STEPS, int) or C.GRASP_WINDOW_STEPS <= 0:
+        raise ValueError(
+            f"GRASP_WINDOW_STEPS must be a positive int, got {C.GRASP_WINDOW_STEPS!r}"
+        )
+    for name in ("APPROACH_DIST_M", "LIFT_MARGIN_M", "GRASP_TRACK_TOL_M"):
+        value = getattr(C, name)
+        if not value > 0:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+    if not C.GRASP_JAW_CLOSED_CTRL_MAX > 0:
+        raise ValueError(
+            f"GRASP_JAW_CLOSED_CTRL_MAX must be positive, got {C.GRASP_JAW_CLOSED_CTRL_MAX!r}"
+        )
+
+
+_validate_constants()  # fail loudly at import (T-02-02)
+
+
+def _hold_pred(sim: SimReadout) -> bool:
+    """D-01's kinematic-hold predicate: jaw closed command AND the cube
+    tracking the grasp point within GRASP_TRACK_TOL_M (3D)."""
+    jaw_closed = sim.jaw_ctrl_applied <= C.GRASP_JAW_CLOSED_CTRL_MAX
+    tracks = (
+        float(np.linalg.norm(np.asarray(sim.cube_pos) - np.asarray(sim.grasp_point)))
+        <= C.GRASP_TRACK_TOL_M
+    )
+    return jaw_closed and tracks
 
 
 def update(state: StageState, sim: SimReadout) -> None:
-    """Advance the stage machine one control step, mutating ``state`` in place."""
-    raise NotImplementedError("RED stub (Plan 02-01 Task 1)")
+    """Advance the stage machine one control step, mutating ``state`` in place.
+
+    Monotone per D-04: every branch only ever flips a flag False->True; no
+    readout can un-set an already-True flag. The hold predicate is evaluated
+    only while grasp is still False — after grasp sets, the counter is
+    frozen and the window is never re-armed within the episode.
+    """
+    if not state.approach:
+        state.approach = sim.approach_dist_m <= C.APPROACH_DIST_M
+
+    if not state.grasp:
+        if _hold_pred(sim):
+            state.grasp_hold_counter += 1
+            if state.grasp_hold_counter >= C.GRASP_WINDOW_STEPS:
+                state.grasp = True
+        else:
+            state.grasp_hold_counter = 0
+
+    if not state.lift:
+        state.lift = float(np.asarray(sim.cube_pos).reshape(-1)[2]) > (
+            C.CUBE_REST_Z_RANGE[1] + C.LIFT_MARGIN_M
+        )
+
+    if not state.place:
+        state.place = resting_at_goal(sim.cube_pos, sim.cube_qvel)
 
 
 def stage_index(state: StageState) -> int:
     """Number of True flags — 0 (none) .. 4 (place)."""
-    raise NotImplementedError("RED stub (Plan 02-01 Task 1)")
+    return int(state.approach) + int(state.grasp) + int(state.lift) + int(state.place)
