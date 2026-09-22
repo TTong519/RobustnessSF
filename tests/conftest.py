@@ -48,14 +48,19 @@ def render_env():
     env_.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def vision_env():
     """Vision-mode env (obs_mode='vision', ENV-03 Dict obs), 64x64 rgb_array render.
 
-    Session-scoped mirror of the render_env pattern: reset(seed=0) here, and
-    each test that steps the env resets(seed=0) first — a seeded grid reset
-    is fully deterministic, so shared use stays reproducible (the same
-    read-only-use contract as render_env).
+    FUNCTION-scoped (deviation from the plan's session scope, Rule 3):
+    gymnasium 1.3.0's OffScreenViewer.render() never re-establishes GL
+    context currency — creating a SECOND offscreen viewer anywhere in the
+    process steals the "current" context and the first viewer silently
+    renders all-black frames (verified empirically). A shared session
+    renderer therefore cannot survive alongside any other viewer-creating
+    test (e.g. check_env on vision constructions); a fresh env per test
+    gives each test its own viewer. Tests reset(seed=0) first — a seeded
+    grid reset is fully deterministic.
     """
     env_ = SO100PickPlaceEnv(
         frame_skip=25,
@@ -69,12 +74,13 @@ def vision_env():
     env_.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def gray_env():
     """Grayscale vision env: vision_env's construction plus grayscale=True (D-05 gray candidate).
 
-    Session-scoped, same reset(seed=0)-first discipline as vision_env; the
-    image observations are uint8 (64, 64, 1) — trailing channel kept.
+    FUNCTION-scoped for the same gymnasium GL-context-currency reason as
+    vision_env. The image observations are uint8 (64, 64, 1) — trailing
+    channel kept.
     """
     env_ = SO100PickPlaceEnv(
         frame_skip=25,

@@ -76,7 +76,13 @@ def test_step_50_control_steps_leaves_cube_stable(env):
 
 
 def test_render_returns_nondegenerate_64x64_frame(env):
-    """Test 4: render() returns a uint8 (64, 64, 3) frame with real dynamic range."""
+    """Test 4: render() returns a uint8 (64, 64, 3) frame with real dynamic range.
+
+    render() stays RGB REGARDLESS of the env's grayscale setting (Phase 3,
+    ENV-03): the grayscale conversion lives ONLY inside _get_obs, so a
+    future refactor must never "optimize" render() into returning gray —
+    the RGB frame contract is load-bearing for the env's public API.
+    """
     env.reset(seed=0)
 
     frame = env.render()

@@ -26,8 +26,10 @@ depth suite below):
     [25:28] cube -> goal offset                       D-02
 """
 
+import math
 import warnings
 
+import mujoco
 import numpy as np
 import pytest
 from gymnasium import spaces
@@ -35,6 +37,14 @@ from gymnasium.utils.env_checker import check_env
 
 from so100rob import constants as C
 from so100rob.envs.pick_place_env import SO100PickPlaceEnv
+from so100rob.scripted_policy import grasp_point
+
+
+def _cube_addresses(env):
+    """Independently re-resolve the cube freejoint qpos/qvel addresses by name."""
+    cube_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, C.CUBE_JOINT)
+    assert cube_id >= 0
+    return env.model.jnt_qposadr[cube_id], env.model.jnt_dofadr[cube_id]
 
 
 def test_default_state_mode_flat_28():
@@ -138,7 +148,10 @@ def test_check_env_all_modes():
         for env in envs:
             with warnings.catch_warnings(record=True) as record:
                 warnings.simplefilter("always")
-                check_env(env, skip_render_check=True)
+                # skip_close_check: check_env's close check only runs for
+                # registered envs (spec is not None) — ours is unregistered —
+                # but pin the intent explicitly anyway.
+                check_env(env, skip_render_check=True, skip_close_check=True)
             unexpected = [str(w.message) for w in record if not is_inherent(str(w.message))]
             assert unexpected == [], (
                 f"check_env emitted unexpected warnings for {type(env).__name__}: "
@@ -147,8 +160,15 @@ def test_check_env_all_modes():
             # Every emission was one of the three inherent advisories.
             assert all(is_inherent(str(w.message)) for w in record)
     finally:
-        for env in envs:
-            env.close()
+        # Close ONLY the state-mode env (no renderer). The two vision envs
+        # are deliberately NOT closed here: gymnasium 1.3.0's
+        # OffScreenViewer.close() calls glfw.terminate() — a PROCESS-GLOBAL
+        # teardown that silently turns every other live offscreen renderer's
+        # frames black (verified empirically: the session vision_env's
+        # frames max==min==0 after any vision env.close()). Their GL
+        # contexts are freed by OffScreenViewer.__del__ (free() only, no
+        # terminate) at GC/process exit.
+        envs[0].close()
 
 
 def test_vision_requires_render_mode():
@@ -161,3 +181,181 @@ def test_invalid_obs_mode_rejected():
     """An unrecognized obs_mode raises ValueError naming the accepted modes (spawn_mode pattern)."""
     with pytest.raises(ValueError, match="state"):
         SO100PickPlaceEnv(obs_mode="bogus")
+
+
+# ---------------------------------------------------------------------------
+# Observation depth: D-01/D-02/D-03 block layout, yaw cross-check, image
+# contracts, cross-mode state identity, non-finite guard (Plan 03-01 Task 2)
+# ---------------------------------------------------------------------------
+
+
+def test_state_vector_block_layout():
+    """D-01/D-02/D-03: the 28-dim vector matches an IN-TEST recomputation block-by-block.
+
+    The expected vector is recomputed here directly from env.data (qpos/qvel,
+    the cube qpos block, the atan2 yaw, the cube qvel block, grasp_point(),
+    GOAL_POS) — anything added to or dropped from _get_obs breaks the
+    equality. This is the anti-RNG / anti-noise test: an injected draw or
+    noise term can never match an independent recomputation from simulator
+    state.
+    """
+    env = SO100PickPlaceEnv()
+    try:
+        obs, _info = env.reset(seed=0)
+        qpos = np.asarray(env.data.qpos, dtype=np.float64)
+        qvel = np.asarray(env.data.qvel, dtype=np.float64)
+        adr, dof_adr = _cube_addresses(env)
+
+        cube_pos = qpos[adr : adr + 3]
+        w, x, y, z = qpos[adr + 3 : adr + 7]
+        cube_yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+        cube_qvel = qvel[dof_adr : dof_adr + 6]
+        pad_midpoint = np.asarray(grasp_point(env.model, env.data), dtype=np.float64)
+
+        expected = np.concatenate(
+            [
+                qpos[:6],                          # [0:6]   arm qpos
+                qvel[:6],                          # [6:12]  arm qvel
+                cube_pos,                          # [12:15] cube position
+                [cube_yaw],                        # [15]    cube yaw
+                cube_qvel,                         # [16:22] cube qvel (6D)
+                pad_midpoint - cube_pos,           # [22:25] gripper->cube
+                cube_pos - np.asarray(C.GOAL_POS),  # [25:28] cube->goal
+            ]
+        )
+
+        assert obs.dtype == np.float32
+        assert obs.shape == (C.OBS_STATE_DIM,)
+        np.testing.assert_allclose(obs, expected, rtol=1e-6, atol=1e-6)
+        # The 4-dim quaternion never enters the vector, and the superseded
+        # 2-D cube_xy-goal term is gone: the total is exactly the 7 blocks.
+        assert obs.shape[0] == 6 + 6 + 3 + 1 + 6 + 3 + 3
+    finally:
+        env.close()
+
+
+def test_cube_yaw_matches_mujoco_conversion():
+    """A3: the observed yaw (index 15) matches mujoco's own quaternion conversion.
+
+    Writes known cube orientations into data.qpos directly (identity, a
+    pure z-rotation by a known angle, and a non-axis-aligned tilt), runs
+    mj_forward, and asserts the observed yaw equals the heading derived
+    from mujoco.mju_quat2Mat's rotation matrix (atan2(R[1,0], R[0,0])) —
+    never a second hand-rolled quaternion formula.
+    """
+    env = SO100PickPlaceEnv()
+    try:
+        env.reset(seed=0)
+        adr, _dof_adr = _cube_addresses(env)
+
+        def quat_for(w, x, y, z):
+            q = np.array([w, x, y, z], dtype=float)
+            return q / np.linalg.norm(q)
+
+        cases = [
+            # (quaternion, known yaw or None when only the matrix cross-check applies)
+            (quat_for(1.0, 0.0, 0.0, 0.0), 0.0),                        # identity
+            (quat_for(np.cos(0.7 / 2), 0.0, 0.0, np.sin(0.7 / 2)), 0.7),  # pure z-rot
+            (quat_for(0.8, 0.3, -0.2, 0.4), None),                     # non-axis-aligned
+        ]
+        for quat, known_yaw in cases:
+            env.data.qpos[adr + 3 : adr + 7] = quat
+            mujoco.mj_forward(env.model, env.data)
+
+            # mujoco's own conversion: quaternion -> rotation matrix (row-
+            # major: mat[0]=R[0,0], mat[3]=R[1,0]), then the ZYX heading
+            # atan2(R[1,0], R[0,0]) — identical to the env's 2(wz+xy) /
+            # 1-2(y^2+z^2) atan2 pair by construction.
+            mat = np.zeros(9)
+            mujoco.mju_quat2Mat(mat, quat)
+            expected_yaw = math.atan2(mat[3], mat[0])
+            if known_yaw is not None:
+                assert expected_yaw == pytest.approx(known_yaw, abs=1e-12)
+
+            obs = env._get_obs()
+            assert obs[15] == pytest.approx(expected_yaw, abs=1e-6), (
+                f"obs yaw {obs[15]!r} != mujoco-derived heading {expected_yaw!r} "
+                f"for quaternion {quat.tolist()}"
+            )
+    finally:
+        env.close()
+
+
+def test_vision_image_contract(vision_env):
+    """Image observations: raw contiguous uint8 (64, 64, 3) in [0, 255], non-degenerate.
+
+    render() on the same env still returns RGB (64, 64, 3) — the channel
+    contract is channel-last HWC at the env boundary (Pitfalls 2/9).
+    """
+    obs, _info = vision_env.reset(seed=0)
+    for image in (
+        obs[C.OBS_IMAGE_KEY],
+        vision_env.step(np.asarray(C.HOME_CTRL, dtype=np.float64))[0][C.OBS_IMAGE_KEY],
+    ):
+        assert image.dtype == np.uint8
+        assert image.shape == (64, 64, 3)
+        assert image.flags["C_CONTIGUOUS"]
+        assert image.min() >= 0
+        assert image.max() <= 255
+        assert image.max() > image.min()  # non-degenerate dynamic range
+
+    frame = vision_env.render()
+    assert frame.dtype == np.uint8
+    assert frame.shape == (64, 64, 3)
+
+
+def test_grayscale_image_contract(gray_env):
+    """Grayscale image observations keep the trailing channel: uint8 (64, 64, 1).
+
+    A squeezed 2-dim frame would fail SB3's is_image_space; the trailing
+    channel is mandatory. env.render() on the same env still returns RGB
+    (64, 64, 3) — the grayscale conversion lives ONLY inside _get_obs.
+    """
+    obs, _info = gray_env.reset(seed=0)
+    image = obs[C.OBS_IMAGE_KEY]
+    assert image.dtype == np.uint8
+    assert image.shape == (64, 64, 1)  # trailing channel present, 3 dims total
+    assert image.flags["C_CONTIGUOUS"]
+    assert image.min() >= 0
+    assert image.max() <= 255
+    assert gray_env.observation_space.contains(obs)
+
+    frame = gray_env.render()
+    assert frame.dtype == np.uint8
+    assert frame.shape == (64, 64, 3)  # render() stays RGB regardless of grayscale
+
+
+def test_state_identical_across_modes():
+    """D-12: the 28-dim state assembly is mode-independent — bit-identical across modes.
+
+    The image key is purely additive: resetting a state-mode env and a
+    vision env with the same seed must yield bit-identical state vectors.
+    """
+    state_env = SO100PickPlaceEnv()
+    vision = SO100PickPlaceEnv(
+        obs_mode="vision", render_mode="rgb_array", width=64, height=64
+    )
+    try:
+        state_obs, _ = state_env.reset(seed=123)
+        vision_obs, _ = vision.reset(seed=123)
+        np.testing.assert_array_equal(state_obs, vision_obs[C.OBS_STATE_KEY])
+    finally:
+        state_env.close()
+        vision.close()
+
+
+def test_obs_nonfinite_fails_loudly():
+    """T-03-01: NaN cube state makes _get_obs raise AssertionError, never emit an observation.
+
+    Non-finite physics must fail loudly at the simulator->observation trust
+    boundary instead of silently poisoning the vector the policy trains on.
+    """
+    env = SO100PickPlaceEnv()
+    try:
+        env.reset(seed=0)
+        adr, _dof_adr = _cube_addresses(env)
+        env.data.qpos[adr : adr + 3] = np.nan
+        with pytest.raises(AssertionError, match="T-03-01"):
+            env._get_obs()
+    finally:
+        env.close()
