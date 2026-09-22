@@ -24,8 +24,10 @@ def scene_path():
 def env():
     """Default-rate env (frame_skip=25 -> 20 Hz), model compiled + cube settled.
 
-    Session-scoped: scene-integrity assertions only READ the compiled model,
-    which is immutable after construction. Mutation-free by contract.
+    The D-12 state-mode default (no obs_mode argument): observation is the
+    flat float32 28-dim state vector (Phase 3, ENV-03). Session-scoped:
+    scene-integrity assertions only READ the compiled model, which is
+    immutable after construction. Mutation-free by contract.
     """
     env_ = SO100PickPlaceEnv(frame_skip=25)
     env_.reset(seed=0)
@@ -41,6 +43,47 @@ def render_env():
     without stepping it.
     """
     env_ = SO100PickPlaceEnv(frame_skip=25, render_mode="rgb_array", width=64, height=64)
+    env_.reset(seed=0)
+    yield env_
+    env_.close()
+
+
+@pytest.fixture(scope="session")
+def vision_env():
+    """Vision-mode env (obs_mode='vision', ENV-03 Dict obs), 64x64 rgb_array render.
+
+    Session-scoped mirror of the render_env pattern: reset(seed=0) here, and
+    each test that steps the env resets(seed=0) first — a seeded grid reset
+    is fully deterministic, so shared use stays reproducible (the same
+    read-only-use contract as render_env).
+    """
+    env_ = SO100PickPlaceEnv(
+        frame_skip=25,
+        obs_mode="vision",
+        render_mode="rgb_array",
+        width=64,
+        height=64,
+    )
+    env_.reset(seed=0)
+    yield env_
+    env_.close()
+
+
+@pytest.fixture(scope="session")
+def gray_env():
+    """Grayscale vision env: vision_env's construction plus grayscale=True (D-05 gray candidate).
+
+    Session-scoped, same reset(seed=0)-first discipline as vision_env; the
+    image observations are uint8 (64, 64, 1) — trailing channel kept.
+    """
+    env_ = SO100PickPlaceEnv(
+        frame_skip=25,
+        obs_mode="vision",
+        render_mode="rgb_array",
+        width=64,
+        height=64,
+        grayscale=True,
+    )
     env_.reset(seed=0)
     yield env_
     env_.close()
