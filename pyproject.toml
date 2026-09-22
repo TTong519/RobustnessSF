@@ -9,6 +9,8 @@ dependencies = [
     "imageio==2.37.4",
     "numpy==2.5.2",
     "torch==2.14.0",
+    "stable-baselines3==2.9.0",
+    "tensorboard==2.21.0",
 ]
 
 [dependency-groups]
