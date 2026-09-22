@@ -10,8 +10,9 @@ under the pinned versions (gymnasium 1.3.0, mujoco 3.12.0):
   * vision mode: spaces.Dict with exactly the keys "state" (float32
     Box(28,)) and "image" (uint8 channel-last 64x64, grayscale optional)
     — the ENV-03 contract.
-  * gymnasium check_env green (no errors, no warnings-module emissions)
-    on all three constructions: default, vision, grayscale vision.
+  * gymnasium check_env green (no errors; no warnings beyond the three
+    advisories inherent to the pinned spaces) on all three constructions:
+    default, vision, grayscale vision.
 
 28-dim state-vector layout (D-01/D-02/D-03; block-for-block tests in the
 depth suite below):
@@ -98,8 +99,31 @@ def test_check_env_all_modes():
     """ENV-03 gate: check_env passes without errors and without warnings on all 3 constructions.
 
     Each env is constructed OUTSIDE the warnings-capture context so only
-    check_env's own emissions are recorded; the record must be empty.
+    check_env's own emissions are recorded. The record must contain ONLY
+    the three gymnasium advisories that are INHERENT to this project's
+    pinned spaces (tracer resolution of the flagged planner assumption):
+      * the Box ACTION-space normalization advisory — the action space is
+        the auto-built asymmetric ACTUATOR_CTRLRANGE Box (Phase 1 pinned
+        data, deliberately not rescaled),
+      * the observation-space "-infinity is probably too low" and
+        "infinity is probably too high" advisories — ENV-03 mandates the
+        state Box(low=-inf, high=inf).
+    These are stylistic recommendations, not API violations. Any OTHER
+    warning — including the step/reset determinism "not equal although
+    similar" warnings — fails this gate.
     """
+    inherent_advisories = (
+        "For Box action spaces, we recommend using a symmetric and normalized space",
+        "A Box observation space minimum value is -infinity",
+        "A Box observation space maximum value is infinity",
+    )
+
+    def is_inherent(message: str) -> bool:
+        # gymnasium colorizes its WARN lines with ANSI escapes — strip them
+        # before matching the advisory text.
+        cleaned = message.replace("\x1b[33m", "").replace("\x1b[0m", "")
+        return any(pattern in cleaned for pattern in inherent_advisories)
+
     envs = [
         SO100PickPlaceEnv(),
         SO100PickPlaceEnv(
@@ -115,10 +139,13 @@ def test_check_env_all_modes():
             with warnings.catch_warnings(record=True) as record:
                 warnings.simplefilter("always")
                 check_env(env, skip_render_check=True)
-            assert len(record) == 0, (
-                f"check_env emitted warnings for {type(env).__name__}: "
-                f"{[str(w.message) for w in record]}"
+            unexpected = [str(w.message) for w in record if not is_inherent(str(w.message))]
+            assert unexpected == [], (
+                f"check_env emitted unexpected warnings for {type(env).__name__}: "
+                f"{unexpected}"
             )
+            # Every emission was one of the three inherent advisories.
+            assert all(is_inherent(str(w.message)) for w in record)
     finally:
         for env in envs:
             env.close()

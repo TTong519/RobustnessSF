@@ -188,3 +188,52 @@ REWARD_GAMMA: float = 0.99
 # AUDIT_DENSE_FRACTION of it without a flag advance.
 FULL_FLAGS_NO_PLACE_MAX_FRACTION: float = 0.2
 AUDIT_DENSE_FRACTION: float = 0.01
+
+# ---------------------------------------------------------------------------
+# Pinned observation constants (Phase 3 ENV-03; decisions D-01/D-02/D-03,
+# D-08, D-10, D-12)
+# ---------------------------------------------------------------------------
+
+# Dict key names (planner structural choice; D-08 names the "state" key as
+# the VecNormalize norm_obs_keys target so the uint8 image key is NEVER
+# mean-normalized — SB3 divides image observations by 255 internally).
+OBS_STATE_KEY: str = "state"
+OBS_IMAGE_KEY: str = "image"
+
+# obs_mode values (D-12): state-only is a FIRST-CLASS mode with the same
+# pipeline shape as vision, not a degraded fallback. The env's default is
+# state mode — every existing runner (benchmark / reward audit / physics
+# gate) constructs the env with no obs_mode and must keep working with
+# their Phase 1/2 measured numbers reproducible.
+OBS_MODE_STATE: str = "state"
+OBS_MODE_VISION: str = "vision"
+
+# Rendered image side in pixels (D-05 candidates are 64x64 grayscale and
+# 64x64 RGB; the scene's offscreen buffer allows up to 256). Phase 1's
+# TRAIN-02 measured render cost as ~resolution-independent at this scale.
+OBS_IMAGE_SIZE: int = 64
+
+# Frame-stack depth (D-10): 4 frames = 0.2 s of motion history at the 20 Hz
+# default control rate. Consumed by plan 03-02's image-only stacker and
+# 03-03's smoke runner — pinned here ONCE, never re-literalized. SB3's
+# VecFrameStack/StackedObservations, never gymnasium.wrappers.FrameStack
+# (SB3 CNN incompatibility, issue #799).
+OBS_N_STACK: int = 4
+
+# Pinned state-vector dimensionality (D-01/D-02/D-03 layout):
+#   [0:6]   arm qpos (incl. Jaw aperture)              passthrough
+#   [6:12]  arm qvel                                     passthrough
+#   [12:15] cube position (x, y, z)                     D-01
+#   [15]    cube yaw (atan2 of w-first quaternion)      D-01 — never the quat
+#   [16:22] cube qvel (6D linear + angular)              D-03
+#   [22:25] gripper-pad-midpoint -> cube 3D offset       D-02
+#   [25:28] cube -> goal 3D offset                       D-02
+# COSTLY to change: VecNormalize statistics, PPO feature extractors, and
+# every Phase 4/6 checkpoint consume this layout; changing it after training
+# starts invalidates checkpoints.
+OBS_STATE_DIM: int = 28
+
+# Rec.601 luma weights for the grayscale image conversion (D-05 gray
+# candidate) — mirrors scripts/benchmark.py's _LUMA so the env-side
+# conversion and the benchmark's timed conversion are the same transform.
+OBS_LUMA: tuple[float, float, float] = (0.2989, 0.5870, 0.1140)

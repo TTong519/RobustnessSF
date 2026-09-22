@@ -13,8 +13,11 @@ upstream SO-ARM100 model). Scope after Phase 2:
     Phases 3-5), terminated=True on the step the place flag first sets,
     truncated=True at the step cap without success (timeout is truncation,
     NEVER termination — PPO bootstrapping depends on the distinction)
-  * observation is a minimal flat state vector — the full obs pipeline
-    (images) is Phase 3 scope
+  * observation is obs_mode-parameterized (ENV-03, Phase 3): default
+    (D-12) state mode emits a flat float32 Box with the pinned 28-dim
+    D-01/D-02/D-03 state vector; opt-in obs_mode="vision" (requires
+    render_mode="rgb_array") emits a spaces.Dict{state, image} with a
+    raw uint8 channel-last 64x64 image key (grayscale optional)
 
 The control update rate is the constructor-time frame_skip (ENV-04): the
 physics timestep is pinned in the scene (0.002 s) and a "rate change" is
@@ -34,10 +37,6 @@ from so100rob import constants as C
 from so100rob import reward
 from so100rob import stages
 from so100rob.scripted_policy import grasp_point
-
-# Minimal Phase 1 observation: qpos (13) + qvel (12) + 2D XY offset of the
-# cube center from the goal position.
-_OBS_DIM = 13 + 12 + 2
 
 
 def load_spawn_grid(path: Path | str) -> np.ndarray:
@@ -103,26 +102,62 @@ class SO100PickPlaceEnv(MujocoEnv):
         spawn_mode: str = "grid",
         spawn_seeds_path: Path | str | None = None,
         episode_sim_seconds: float = C.EPISODE_SIM_SECONDS,
+        obs_mode: str = C.OBS_MODE_STATE,
+        grayscale: bool = False,
     ) -> None:
-        # Spawn mode + seed-file validation BEFORE the (slow) model compile:
-        # a malformed frozen-data file fails fast and loudly (T-01-03).
+        # Spawn mode + obs mode validation BEFORE the (slow) model compile:
+        # a malformed frozen-data file or a bad obs_mode fails fast and
+        # loudly (T-01-03; the spawn_mode fail-fast pattern).
         if spawn_mode not in ("grid", "continuous"):
             raise ValueError(
                 f"unsupported spawn_mode: {spawn_mode!r} (expected 'grid' or 'continuous')"
             )
+        if obs_mode not in (C.OBS_MODE_STATE, C.OBS_MODE_VISION):
+            raise ValueError(
+                f"unsupported obs_mode: {obs_mode!r} "
+                f"(expected {C.OBS_MODE_STATE!r} or {C.OBS_MODE_VISION!r})"
+            )
+        if obs_mode == C.OBS_MODE_VISION and render_mode != "rgb_array":
+            raise ValueError(
+                "obs_mode='vision' requires render_mode='rgb_array' "
+                f"(got render_mode={render_mode!r}) — the image observation "
+                "is rendered through the env's offscreen renderer"
+            )
         self.spawn_mode = spawn_mode
+        self._obs_mode = obs_mode
+        self._grayscale = grayscale
         if spawn_mode == "grid":
             self.spawn_seeds_path = (
                 Path(spawn_seeds_path) if spawn_seeds_path is not None else C.SPAWN_SEEDS_PATH
             )
             self._spawn_grid = load_spawn_grid(self.spawn_seeds_path)
 
+        # Observation space per obs_mode (ENV-03), built in a local BEFORE
+        # super().__init__ (MujocoEnv simply assigns the space we pass).
+        # The DEFAULT stays flat-state (D-12): scripts/benchmark.py,
+        # run_reward_audit.py, and run_physics_gate.py construct the env
+        # with no obs_mode, so their Phase 1/2 measured numbers stay
+        # reproducible; vision is opt-in.
+        _state_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(C.OBS_STATE_DIM,), dtype=np.float32
+        )
+        if obs_mode == C.OBS_MODE_VISION:
+            _n_channels = 1 if grayscale else 3
+            observation_space: spaces.Space = spaces.Dict(
+                {
+                    C.OBS_STATE_KEY: _state_space,
+                    C.OBS_IMAGE_KEY: spaces.Box(
+                        low=0, high=255, shape=(height, width, _n_channels), dtype=np.uint8
+                    ),
+                }
+            )
+        else:
+            observation_space = _state_space
+
         super().__init__(
             model_path=str(C.SCENE_XML_PATH),
             frame_skip=frame_skip,
-            observation_space=spaces.Box(
-                low=-np.inf, high=np.inf, shape=(_OBS_DIM,), dtype=np.float32
-            ),
+            observation_space=observation_space,
             render_mode=render_mode,
             width=width,
             height=height,
@@ -162,8 +197,6 @@ class SO100PickPlaceEnv(MujocoEnv):
         if self._jaw_act_idx < 0:
             raise ValueError("actuator 'Jaw' not found in compiled model")
 
-        self._goal_xy = np.asarray(C.GOAL_POS[:2], dtype=np.float64)
-
         # Episode-local stage/reward state placeholders — reset_model owns
         # the authoritative clearing (Pitfall 6); these exist so the
         # attributes are defined even before the first reset.
@@ -176,16 +209,80 @@ class SO100PickPlaceEnv(MujocoEnv):
     # Observations
     # ------------------------------------------------------------------
 
-    def _get_obs(self) -> np.ndarray:
-        cube_xy = np.asarray(self.data.qpos[self._cube_qposadr : self._cube_qposadr + 2])
-        obs = np.concatenate(
-            [
-                self.data.qpos,
-                self.data.qvel,
-                cube_xy - self._goal_xy,
-            ]
+    def _get_obs(self):
+        """Assemble the observation for the env's obs_mode (ENV-03, Phase 3).
+
+        The 28-dim state vector (D-01/D-02/D-03) is mode-independent: state
+        mode returns it flat, vision mode returns it as the Dict's "state"
+        entry with the rendered "image" key purely additive. Assembly draws
+        NO RNG (Pitfall 10 — check_env's seeded-reset determinism depends on
+        it) and asserts every block finite so NaN/Inf physics fails loudly
+        instead of poisoning the observation (T-03-01).
+        """
+        qpos = self.data.qpos
+        qvel = self.data.qvel
+        adr = self._cube_qposadr
+
+        arm_qpos = np.asarray(qpos[:6], dtype=np.float64)
+        arm_qvel = np.asarray(qvel[:6], dtype=np.float64)
+        cube_pos = np.asarray(qpos[adr : adr + 3], dtype=np.float64)
+        # Cube yaw from the w-first (scalar-first) freejoint quaternion
+        # (D-01): the 4-dim quaternion itself NEVER enters the vector.
+        w, x, y, z = (float(v) for v in qpos[adr + 3 : adr + 7])
+        cube_yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+        cube_qvel = np.asarray(qvel[self._cube_dofadr : self._cube_dofadr + 6], dtype=np.float64)
+        pad_midpoint = np.asarray(grasp_point(self.model, self.data), dtype=np.float64)
+        gripper_to_cube = pad_midpoint - cube_pos
+        cube_to_goal = cube_pos - np.asarray(C.GOAL_POS, dtype=np.float64)
+
+        # Fail-loudly finite guard (the _gather_readout assert style, threat
+        # T-03-01): non-finite physics must never become an observation.
+        assert all(
+            np.isfinite(v).all()
+            for v in (
+                arm_qpos,
+                arm_qvel,
+                cube_pos,
+                cube_qvel,
+                gripper_to_cube,
+                cube_to_goal,
+            )
+        ) and math.isfinite(cube_yaw), (
+            "non-finite simulation state in the observation — NaN/Inf "
+            "physics must fail loudly, never poison the observation (T-03-01)"
         )
-        return obs.astype(np.float32)
+
+        state = np.concatenate(
+            [
+                arm_qpos,          # [0:6]   arm qpos (incl. Jaw aperture)
+                arm_qvel,          # [6:12]  arm qvel
+                cube_pos,          # [12:15] cube position (D-01)
+                [cube_yaw],        # [15]    cube yaw (D-01)
+                cube_qvel,         # [16:22] cube qvel, 6D (D-03)
+                gripper_to_cube,   # [22:25] gripper->cube 3D offset (D-02)
+                cube_to_goal,      # [25:28] cube->goal 3D offset (D-02)
+            ]
+        ).astype(np.float32)
+
+        if self._obs_mode == C.OBS_MODE_STATE:
+            return state
+
+        # Vision branch (ENV-03): the gymnasium offscreen renderer returns a
+        # vertically-flipped NEGATIVE-STRIDE view that torch.from_numpy
+        # rejects — one np.ascontiguousarray copy at the env boundary
+        # (Pitfall 2). Frames stay raw uint8 [0, 255]: SB3 divides image
+        # observations by 255 internally, so pre-normalizing here would
+        # double-normalize and silently ruin learning (Pitfall 9).
+        frame = np.ascontiguousarray(self.render())
+        if self._grayscale:
+            # Rec.601 luma (same weights as scripts/benchmark.py's timed
+            # conversion). The trailing channel is KEPT — a squeezed (H, W)
+            # frame is a 2-dim Box that fails SB3's is_image_space.
+            gray = np.rint(frame.astype(np.float32) @ np.asarray(C.OBS_LUMA, dtype=np.float32))
+            frame = np.ascontiguousarray(
+                gray.clip(0, 255).astype(np.uint8)[:, :, None]
+            )
+        return {C.OBS_STATE_KEY: state, C.OBS_IMAGE_KEY: frame}
 
     # ------------------------------------------------------------------
     # Gymnasium API
@@ -221,7 +318,7 @@ class SO100PickPlaceEnv(MujocoEnv):
             approach_dist_m=approach_dist_m,
         )
 
-    def step(self, action) -> tuple[np.ndarray, float, bool, bool, dict]:
+    def step(self, action) -> tuple[np.ndarray | dict, float, bool, bool, dict]:
         self.do_simulation(action, self.frame_skip)
         self._elapsed_steps += 1
 
@@ -296,7 +393,7 @@ class SO100PickPlaceEnv(MujocoEnv):
         y = float(self.np_random.uniform(C.SPAWN_PATCH_Y[0], C.SPAWN_PATCH_Y[1]))
         return x, y, C.SPAWN_Z
 
-    def reset_model(self) -> np.ndarray:
+    def reset_model(self) -> np.ndarray | dict:
         """Keyframe reset + explicit cube spawn + settle.
 
         Order matters (research Pattern 2 / Pitfall 1):
