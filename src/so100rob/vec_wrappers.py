@@ -26,6 +26,7 @@ so100rob.constants.OBS_* — never re-literalized here.
 
 from gymnasium import spaces
 from stable_baselines3.common.vec_env import VecEnvWrapper
+from stable_baselines3.common.vec_env.stacked_observations import StackedObservations
 
 from so100rob import constants as C
 
@@ -70,16 +71,62 @@ class ImageOnlyFrameStack(VecEnvWrapper):
         super().__init__(venv)
         self.n_stack = n_stack
         self.image_key = image_key
-        raise NotImplementedError(
-            "ImageOnlyFrameStack stacking machinery not implemented yet — "
-            "TDD RED stub (Plan 03-02 Task 1); the GREEN commit reuses SB3's "
-            "StackedObservations for the image key only (D-11)."
+        # SB3's own stacking machinery, one instance for the image key only
+        # (D-11): ring buffer, done-reset semantics, and the np.repeat space
+        # math are library-tested — never hand-rolled. channels_order=None
+        # auto-detects channels-last for the HWC uint8 image space.
+        self.stacked = StackedObservations(
+            venv.num_envs, n_stack, venv.observation_space[image_key], channels_order=None
         )
+        # The wrapper's space is the venv's Dict with ONLY the image key
+        # replaced by the stacked image space.
+        new_spaces = dict(venv.observation_space.spaces)
+        new_spaces[image_key] = self.stacked.stacked_observation_space
+        self.observation_space = spaces.Dict(new_spaces)
 
-    # VecEnvWrapper is an ABC: reset/step_wait must exist for the stub to be
-    # instantiable-into-failure. Both raise the RED NotImplementedError.
-    def reset(self):  # noqa: D102 — stub, replaced by the GREEN commit
-        raise NotImplementedError("RED stub: stacking machinery not implemented (D-11)")
+    def reset(self):
+        """Reset the underlying venv, then the image stack with the first frame.
 
-    def step_wait(self):  # noqa: D102 — stub, replaced by the GREEN commit
-        raise NotImplementedError("RED stub: stacking machinery not implemented (D-11)")
+        SB3's stacker zero-fills the older slots and places the reset
+        frame in the NEWEST slot — identical to plain VecFrameStack, so
+        the D-12 fallback and this wrapper share one reset semantics. A
+        fresh episode NEVER inherits frames from the previous one
+        (Pitfall 3): the stack is zeroed before the new frame lands.
+        """
+        obs = self.venv.reset()
+        stacked_img = self.stacked.reset(obs[self.image_key])
+        obs = {**obs, self.image_key: stacked_img}
+        return obs
+
+    def step_wait(self):
+        """Step the venv; delegate ONLY the image key to the stacker.
+
+        StackedObservations.update consumes the dones itself: for each
+        done env it zeroes that env's stack and places the auto-reset
+        frame in the newest slot, so the post-done obs carries zero
+        contribution from the previous episode (Pitfall 3). Every other
+        key passes through untouched.
+
+        The stacker is constructed over the image Box subspace, so the
+        per-env ``terminal_observation`` (a Dict) must be split into the
+        image key before it enters the stacker and the stacked terminal
+        image written back afterwards — exactly the sub-info plumbing
+        SB3's own Dict branch performs, applied to the single key
+        (skeleton fix: passing the full Dict infos into the Box-space
+        stacker crashes on the first episode termination).
+        """
+        obs, rewards, dones, infos = self.venv.step_wait()
+        sub_infos = [
+            {"terminal_observation": info["terminal_observation"][self.image_key]}
+            if "terminal_observation" in info
+            else {}
+            for info in infos
+        ]
+        stacked_img, sub_infos = self.stacked.update(obs[self.image_key], dones, sub_infos)
+        for env_idx, info in enumerate(infos):
+            if "terminal_observation" in info:
+                info["terminal_observation"][self.image_key] = sub_infos[env_idx][
+                    "terminal_observation"
+                ]
+        obs = {**obs, self.image_key: stacked_img}
+        return obs, rewards, dones, infos

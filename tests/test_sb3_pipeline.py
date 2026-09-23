@@ -95,10 +95,15 @@ def test_stack_image_only_rgb():
     img = obs[C.OBS_IMAGE_KEY]
     assert img.shape == (2, C.OBS_IMAGE_SIZE, C.OBS_IMAGE_SIZE, n_ch * C.OBS_N_STACK)
     assert img.dtype == np.uint8
-    # After reset every channel block equals the episode's first frame.
-    first = img[0, :, :, -n_ch:]
-    for k in range(C.OBS_N_STACK):
-        np.testing.assert_array_equal(img[0, :, :, k * n_ch : (k + 1) * n_ch], first)
+    # SB3 reset semantics (verified against StackedObservations source):
+    # older slots are ZERO-filled, the newest slot holds the first frame —
+    # identical to plain VecFrameStack, so the D-12 fallback and this
+    # wrapper share one reset contract.
+    for k in range(C.OBS_N_STACK - 1):
+        np.testing.assert_array_equal(
+            img[0, :, :, k * n_ch : (k + 1) * n_ch],
+            np.zeros((C.OBS_IMAGE_SIZE, C.OBS_IMAGE_SIZE, n_ch), dtype=np.uint8),
+        )
     # After one step the NEWEST block equals the env's current frame
     # (fresh same-state render, deterministic regime).
     obs, _, dones, _ = stacked.step(np.tile(_ACTION, (2, 1)))
@@ -146,43 +151,52 @@ def test_stack_state_passthrough():
 
 
 def test_no_cross_episode_bleed():
-    """Pitfall 3: after a truncation the stacked image equals the NEW episode's first frame repeated 4x — done-handling resets the stack, never mixing episodes."""
+    """Pitfall 3: after a truncation the stack resets clean — older slots ZERO, newest slot the NEW episode's first frame; zero contribution from the previous episode."""
     # Short episodes (0.5 s / 0.05 s dt -> 10 control steps) so the run
     # truncates quickly.
     raw = _vision_venv(episode_sim_seconds=0.5)
     stacked = ImageOnlyFrameStack(raw)
     stacked.reset()
-    last_img = None
+    last_frame = None
     dones = np.zeros(2, dtype=bool)
     steps = 0
     while not dones.any():
         obs, _, dones, _ = stacked.step(np.tile(_ACTION, (2, 1)))
-        last_img = obs[C.OBS_IMAGE_KEY]
+        if not dones.any():
+            # The stacker returns a shared rolling buffer — copy what we
+            # keep, and only from a PRE-done step (the done step's obs is
+            # already the auto-reset stack).
+            last_frame = obs[C.OBS_IMAGE_KEY][0, :, :, -3:].copy()
         steps += 1
         assert steps < 50, "episode did not truncate within the expected cap"
     assert dones.all()  # both envs truncate at the same 10-step cap
-    # The step's obs is the AUTO-RESET frame (DummyVecEnv resets on done).
-    post = obs[C.OBS_IMAGE_KEY][0]
+    # The step's obs is the AUTO-RESET stack (DummyVecEnv resets on done).
+    post = obs[C.OBS_IMAGE_KEY][0].copy()
     n_ch = post.shape[-1] // C.OBS_N_STACK
     frame = post[:, :, -n_ch:]
-    # Every channel block equals the new episode's first frame — zero
-    # contribution from the previous episode.
-    for k in range(C.OBS_N_STACK):
-        np.testing.assert_array_equal(post[:, :, k * n_ch : (k + 1) * n_ch], frame)
+    # SB3 done-reset semantics: the older slots are zeroed, the newest
+    # slot is the new episode's first frame — ZERO contribution from the
+    # previous episode (the plan's Pitfall-3 intent, enforced literally).
+    zeros = np.zeros_like(frame)
+    for k in range(C.OBS_N_STACK - 1):
+        np.testing.assert_array_equal(post[:, :, k * n_ch : (k + 1) * n_ch], zeros)
+    assert frame.max() > 0, "the new first frame must be non-degenerate"
     # ... and that frame is exactly the underlying env's current,
     # freshly-reset state (same-state re-render, deterministic regime).
     current = raw.envs[0].unwrapped._get_obs()[C.OBS_IMAGE_KEY]
     np.testing.assert_array_equal(frame, current)
-    # Non-vacuousness: the pre-truncation frame (moved-pose arm) differs
-    # from the fresh-reset frame (home pose), so a stale stack could not
-    # have passed the all-blocks-equal assertion above by accident.
-    assert not np.array_equal(last_img[0, :, :, -n_ch:], frame)
+    # Non-vacuousness: the pre-truncation frame (moved-pose arm, non-zero)
+    # differs from the fresh-reset frame (home pose), so a stale stack
+    # could not have passed the zeroed-older-slots assertion by accident.
+    assert last_frame.max() > 0
+    assert not np.array_equal(last_frame, frame)
     # Explicit reset: the stack starts the next episode clean as well.
     obs = stacked.reset()
-    post = obs[C.OBS_IMAGE_KEY][0]
+    post = obs[C.OBS_IMAGE_KEY][0].copy()
     frame = post[:, :, -n_ch:]
-    for k in range(C.OBS_N_STACK):
-        np.testing.assert_array_equal(post[:, :, k * n_ch : (k + 1) * n_ch], frame)
+    for k in range(C.OBS_N_STACK - 1):
+        np.testing.assert_array_equal(post[:, :, k * n_ch : (k + 1) * n_ch], zeros)
+    np.testing.assert_array_equal(frame, current)
 
 
 def test_state_mode_flat_fallback_shape():
