@@ -37,9 +37,10 @@ import importlib.metadata
 import numpy as np
 import pytest
 import stable_baselines3
+from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.preprocessing import is_image_space
-from stable_baselines3.common.vec_env import VecFrameStack
+from stable_baselines3.common.vec_env import VecFrameStack, VecNormalize, VecTransposeImage
 from torch.utils.tensorboard import SummaryWriter  # noqa: F401  (T-03-SC import proof)
 
 from so100rob import constants as C
@@ -217,3 +218,99 @@ def test_wrapper_rejects_bad_spaces():
     dict_venv = _vision_venv(n_envs=1)
     with pytest.raises(ValueError, match="image key"):
         ImageOnlyFrameStack(dict_venv, image_key="nope")
+
+
+def _pipeline_chain():
+    """The exact wrapper chain Phase 4 reuses (RESEARCH Pattern 3):
+
+    make_vec_env -> VecNormalize(norm_obs_keys=[state]) ->
+    ImageOnlyFrameStack -> VecTransposeImage. Returns (chain, vec_normalize).
+    """
+    venv = _vision_venv()
+    # Pitfall 1: SB3 2.9.0 renamed the parameter to norm_obs_keys — the
+    # default normalizes ALL keys, which would float-normalize the uint8
+    # image key and corrupt the ENV-03 contract.
+    norm = VecNormalize(
+        venv,
+        norm_obs_keys=[C.OBS_STATE_KEY],
+        norm_obs=True,
+        norm_reward=True,
+        gamma=C.REWARD_GAMMA,  # Pitfall 11: both gamma sites read the constant
+    )
+    return VecTransposeImage(ImageOnlyFrameStack(norm)), norm
+
+
+def test_train_save_reload_bitwise_and_stats_roundtrip(tmp_path):
+    """D-08/D-09: tiny real PPO learn, checkpoint bundle, strict-order reload, bitwise-identical actions, exact VecNormalize stats round-trip (Pitfalls 4/5/7/9)."""
+    chain, norm = _pipeline_chain()
+
+    # Tiny budget with pinned divisibility (Pitfall 7): 768 total steps =
+    # 3 rollout buffers of n_steps 128 x n_envs 2; batch 64 divides 256.
+    model = PPO(
+        "MultiInputPolicy",
+        chain,
+        n_steps=128,
+        batch_size=64,
+        n_epochs=2,
+        gamma=C.REWARD_GAMMA,  # Pitfall 11: PPO's gamma reads the constant
+        seed=0,
+        device="cpu",
+        policy_kwargs=dict(net_arch=[16]),
+        verbose=0,  # no tensorboard_log here: the suite stays filesystem-clean (03-03 owns TB)
+    )
+    model.learn(total_timesteps=768)
+
+    # D-08: the checkpoint bundle is (model file + VecNormalize pkl) —
+    # the two ALWAYS travel together.
+    model_path = str(tmp_path / "ppo_tiny")
+    stats_path = str(tmp_path / "vecnormalize.pkl")
+    model.save(model_path)
+    norm.save(stats_path)
+
+    # Stats snapshot BEFORE save is what must round-trip exactly.
+    state_mean = norm.obs_rms[C.OBS_STATE_KEY].mean.copy()
+    state_var = norm.obs_rms[C.OBS_STATE_KEY].var.copy()
+    ret_mean = norm.ret_rms.mean.copy()
+    ret_var = norm.ret_rms.var.copy()
+    # Pitfall 9: the image key is NEVER in obs_rms — uint8 images are
+    # normalized inside SB3 (preprocess_obs /255), never by VecNormalize.
+    assert C.OBS_IMAGE_KEY not in norm.obs_rms
+
+    # RELOAD in the strict order (Pitfall 4): fresh raw venv ->
+    # VecNormalize.load -> rebuild stack -> rebuild transpose ->
+    # PPO.load().set_env. Any other order is the classic silent break
+    # (space mismatch) this test exists to catch.
+    fresh_raw = _vision_venv()  # identical raw construction to training
+    loaded_norm = VecNormalize.load(stats_path, fresh_raw)
+    loaded_chain = VecTransposeImage(ImageOnlyFrameStack(loaded_norm))
+    loaded_model = PPO.load(model_path, device="cpu")
+    loaded_model.set_env(loaded_chain)
+
+    # The loaded model's space keys are exactly the Dict contract's.
+    assert set(loaded_model.observation_space.spaces.keys()) == {
+        C.OBS_STATE_KEY,
+        C.OBS_IMAGE_KEY,
+    }
+
+    # D-09 bitwise equality: fixed obs built in the LOADED model's own
+    # post-stack post-transpose shapes — read from the space, never
+    # hand-counted (Pitfall 5).
+    fixed_obs = {
+        C.OBS_STATE_KEY: np.zeros(
+            (1, *loaded_model.observation_space[C.OBS_STATE_KEY].shape), dtype=np.float32
+        ),
+        C.OBS_IMAGE_KEY: np.zeros(
+            (1, *loaded_model.observation_space[C.OBS_IMAGE_KEY].shape), dtype=np.uint8
+        ),
+    }
+    a, _ = model.predict(fixed_obs, deterministic=True)
+    b, _ = loaded_model.predict(fixed_obs, deterministic=True)
+    assert np.asarray(a).tobytes() == np.asarray(b).tobytes()
+
+    # D-08 stats round-trip: exact (np.array_equal, not allclose) on the
+    # state key's obs_rms mean/var and on ret_rms; image still absent.
+    assert np.array_equal(loaded_norm.obs_rms[C.OBS_STATE_KEY].mean, state_mean)
+    assert np.array_equal(loaded_norm.obs_rms[C.OBS_STATE_KEY].var, state_var)
+    assert np.array_equal(loaded_norm.ret_rms.mean, ret_mean)
+    assert np.array_equal(loaded_norm.ret_rms.var, ret_var)
+    assert C.OBS_IMAGE_KEY not in loaded_norm.obs_rms
