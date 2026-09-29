@@ -56,13 +56,17 @@ discipline) — use ``uv run python scripts/run_sb3_smoke.py``. The
 SubprocVecEnv workers re-import this module, and without the guard each
 worker would recursively spawn workers (Pitfall 8).
 
-macOS spawn-race hardening (measured on this machine, see the SPAWN_*
-constants block): the first command batch sent to all spawn workers can
-desync against their bootstrap (~30-50% without a readiness delay, 0/12
-with one), so every subproc construction goes through a watchdogged
-readiness barrier with bounded retry, and a global faulthandler
-tripwire converts any later wedged exchange into a traceback dump +
-nonzero exit rather than a silent infinite hang.
+macOS GL-wedge hardening (diagnosed with C-stack evidence — see
+.planning/debug/subproc-topology-benchmark-hang.md and the SPAWN_*
+constants block): a spawn worker's FIRST render — lazy offscreen GL
+context creation plus the first mjr_readPixels, both inside env.reset()
+AFTER the readiness barrier — can wedge non-deterministically in Apple's
+OpenGL-on-Metal layer under 8-way concurrent first use; the parent then
+blocks in SB3's in-order remote.recv. The runner therefore watches EVERY
+untimed setup exchange (construction + readiness barrier + per-worker
+first-render warm-up + the benchmark's reset/warm-up) with bounded
+kill/rebuild/retry, never arms a timed region, and keeps a global
+faulthandler tripwire as the backstop of last resort.
 """
 
 from __future__ import annotations
@@ -118,34 +122,48 @@ FORMATS = ("rgb", "grayscale")  # D-05 candidates, measured identically
 # "higher measured steps/sec wins; within a relative 10% band -> grayscale".
 TIE_BAND_REL = 0.10
 
-# --- macOS spawn robustness (Rule 3 hardening, empirically isolated) -----
-# On this machine (macOS arm64, Python 3.12, spawn start method) a command
-# batch sent to ALL 8 workers before they finish their spawn bootstrap can
-# deadlock permanently: the Connection args travel through macOS's
-# fd-reduction machinery (no SCM_RIGHTS on this platform -> the
-# multiprocessing resource_sharer DupFd dance), and a first-batch command
-# racing that handoff is silently lost — main blocks in recv forever
-# while every worker sits idle at its own recv. Measured with throwaway
-# probes (12 constructions, fresh process): make() itself never hangs
-# (12/12 OK — the get_spaces handshake is single-worker), but the first
-# reset/step batch hung 4/12 times WITHOUT a readiness delay and 0/12
-# times WITH a 4 s delay + an all-worker barrier round-trip. Hence:
-#   1. after construction, wait for workers to finish importing,
-#   2. run a get_attr round-trip to ALL 8 workers as a readiness barrier,
-#   3. both under a SIGALRM watchdog with bounded retry + full worker
-#      cleanup — a hung attempt can never wedge the run.
-# Timed regions are NEVER armed: the watchdog covers construction +
-# readiness only, so measurements are untouched.
-SPAWN_WORKER_READY_DELAY_S = 5.0  # workers need ~2 s to import + reach the command loop
+# --- macOS GL-on-Metal first-render wedge hardening (03-04, G-03-2) -------
+# Root cause (diagnosed with per-worker faulthandler dumps + macOS
+# `sample` C-stacks — .planning/debug/subproc-topology-benchmark-hang.md):
+# each spawn worker lazily creates its offscreen GL context and performs
+# its first mjr_readPixels INSIDE env.reset() — i.e. AFTER the readiness
+# barrier — and on macOS those GL calls ride the deprecated
+# OpenGL-on-Metal layer; under 8-way concurrent first use Apple's stack
+# can block PERMANENTLY (observed stuck sites: glfwCreateWindow ->
+# CGLFlushDrawable -> GLDContextRec::beginRenderPass, and mjr_readPixels
+# -> MTLCompilerFSCache::openSync -> flock on the shared on-disk Metal
+# compiler cache). The parent then blocks forever in SB3's in-order
+# remote.recv. The failure is non-deterministic (the same code passed
+# fully on Sept 23) — it is BOUNDED here, not eliminated. The probe
+# numbers, re-interpreted honestly: the first reset/step batch hung 4/12
+# times WITHOUT a readiness delay and 0/12 WITH a 5 s delay + an
+# all-worker get_attr barrier round-trip — the barrier spaces worker
+# imports away from the first GL use, REDUCING (not eliminating) the
+# contention wedge; a post-barrier command into a connected socketpair
+# cannot be lost. Coverage contract (untimed setup ONLY; timed regions
+# are NEVER armed, so measurements are untouched):
+#   1. construction + worker-ready delay + get_attr readiness barrier +
+#      the vec env's real reset() (the per-worker FIRST-RENDER WARM-UP)
+#      all under one SIGALRM watchdog, bounded retry + full worker
+#      cleanup,
+#   2. the benchmark repeat's untimed reset + warm-up under the same
+#      watchdog (_watched_reset_warmup) — on timeout: kill, rebuild,
+#      retry the WHOLE repeat, bounded count, loud RuntimeError on
+#      exhaustion; a wedged venv is KILLED, never closed (close() joins
+#      workers with no timeout),
+#   3. a wedged worker is provably dead before its replacement renders
+#      (terminate -> bounded join -> SIGKILL in _kill_venv — the Metal
+#      compiler-cache flock is shared state),
+#   4. a global faulthandler tripwire as the backstop of last resort.
+SPAWN_WORKER_READY_DELAY_S = 5.0  # spaces worker imports away from the first GL use (reduces the contention wedge)
 CONSTRUCTION_TIMEOUT_S = 60.0     # a healthy construction + barrier + first-render warm-up is ~5-10 s
 CONSTRUCTION_ATTEMPTS = 3
 BENCH_SETUP_TIMEOUT_S = 60.0      # SIGALRM window for one benchmark repeat's untimed reset + warm-up (subproc only; healthy ~2-6 s = 10x margin; untimed setup, NEVER the timed region)
 BENCH_SETUP_ATTEMPTS = 3         # bounded kill/rebuild/retry-the-repeat count per benchmark repeat; exhaustion raises RuntimeError -> exit 1 per the EXIT-CODE CONTRACT, never a silent hang
 _KILL_JOIN_S = 5.0               # per-phase join bound in _kill_venv
-# Global tripwire: if ANY later exchange desyncs mid-run (never observed
-# once past the first batch, but the failure mode is a silent infinite
-# hang), dump all Python tracebacks and exit nonzero — the EXIT-CODE
-# CONTRACT forbids hanging silently.
+# Backstop of last resort: if an exchange still wedges through some
+# future watchdog coverage gap, dump all Python tracebacks and exit
+# nonzero — the EXIT-CODE CONTRACT forbids hanging silently.
 FAULTHANDLER_TRIPWIRE_S = 25 * 60
 
 

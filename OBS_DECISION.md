@@ -168,9 +168,13 @@ stable-baselines3 2.9.0, tensorboard 2.21.0. Full payload:
 that matters for vision obs) parallelizes across worker processes; at 8 envs
 the spawn worker set pays for itself easily on this machine. Both smoke
 trains ran on the winning topology. (Runner note: spawn constructions go
-through a watchdogged readiness barrier with bounded retry — a measured
-macOS spawn bootstrap race, documented in the runner and in this phase's
-SUMMARY; timed regions are never touched by it.)
+through a watchdogged readiness barrier plus a per-worker first-render
+warm-up and a watched untimed reset/warm-up with bounded
+kill/rebuild/retry — because a non-deterministic macOS GL-on-Metal
+first-render wedge inside a worker's first reset was diagnosed in the
+phase's debug session record
+(.planning/debug/subproc-topology-benchmark-hang.md); timed regions are
+never touched by it.)
 
 ### Per-format PPO smoke trains (identical: 16384 steps, 8 envs, n_steps=128, batch_size=64, n_epochs=2, seed=0, device=cpu, default CNN, both reloads bitwise-equal)
 
