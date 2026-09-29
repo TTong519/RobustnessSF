@@ -137,8 +137,11 @@ TIE_BAND_REL = 0.10
 # Timed regions are NEVER armed: the watchdog covers construction +
 # readiness only, so measurements are untouched.
 SPAWN_WORKER_READY_DELAY_S = 5.0  # workers need ~2 s to import + reach the command loop
-CONSTRUCTION_TIMEOUT_S = 60.0     # a healthy construction + barrier is ~5-8 s
+CONSTRUCTION_TIMEOUT_S = 60.0     # a healthy construction + barrier + first-render warm-up is ~5-10 s
 CONSTRUCTION_ATTEMPTS = 3
+BENCH_SETUP_TIMEOUT_S = 60.0      # SIGALRM window for one benchmark repeat's untimed reset + warm-up (subproc only; healthy ~2-6 s = 10x margin; untimed setup, NEVER the timed region)
+BENCH_SETUP_ATTEMPTS = 3         # bounded kill/rebuild/retry-the-repeat count per benchmark repeat; exhaustion raises RuntimeError -> exit 1 per the EXIT-CODE CONTRACT, never a silent hang
+_KILL_JOIN_S = 5.0               # per-phase join bound in _kill_venv
 # Global tripwire: if ANY later exchange desyncs mid-run (never observed
 # once past the first batch, but the failure mode is a silent infinite
 # hang), dump all Python tracebacks and exit nonzero — the EXIT-CODE
@@ -228,7 +231,9 @@ def _close_if_safe(venv, kind: str) -> None:
 
 
 class _ConstructionTimeout(Exception):
-    """A subproc construction/readiness exchange desynced (macOS spawn race)."""
+    """A subproc untimed-setup exchange desynced (macOS GL-on-Metal
+    first-render wedge): construction/readiness, the per-worker first
+    render, or a benchmark reset/warm-up."""
 
 
 def _on_construction_alarm(signum, frame) -> None:
@@ -237,11 +242,21 @@ def _on_construction_alarm(signum, frame) -> None:
 
 def _kill_venv(venv) -> None:
     """Terminate hung spawn workers and close their pipes so a retry
-    starts from a clean worker set."""
+    starts from a clean worker set.
+
+    A worker still alive after the bounded join gets SIGKILL: a wedged
+    worker can be stuck on the on-disk Metal compiler-cache flock
+    (shared state), so it must be provably dead before a retry's fresh
+    workers render, or the retry can wedge on the same lock. (SB3's
+    _worker installs no SIGTERM handler, so terminate normally
+    suffices; the escalation is the guarantee.)"""
     for p in venv.processes:
         p.terminate()
     for p in venv.processes:
-        p.join(5)
+        p.join(_KILL_JOIN_S)
+        if p.is_alive():
+            p.kill()  # SIGKILL escalation for a SIGTERM-immune wedge
+            p.join(_KILL_JOIN_S)
     for r in venv.remotes:
         try:
             r.close()
@@ -250,17 +265,21 @@ def _kill_venv(venv) -> None:
 
 
 def _make_topology_robust(kind: str, grayscale: bool = False):
-    """Construct a vec-env, hardened against the macOS spawn bootstrap race.
+    """Construct a vec-env with every untimed setup exchange bounded.
 
-    DummyVecEnv is in-process (no pipes) and constructed directly. A spawn
-    SubprocVecEnv gets: construction + worker-ready delay + an all-worker
-    get_attr readiness barrier, all under a SIGALRM watchdog with bounded
-    retry and full worker cleanup — a desynced attempt is killed and
-    rebuilt instead of wedging the run (see the SPAWN_* constants block
-    for the measured evidence). Once the barrier round-trip completes,
-    every worker is provably in its command loop, so the first real
-    command batch (the protocol's reset/warm-up) cannot race the spawn
-    bootstrap. Timed regions are never armed.
+    DummyVecEnv is in-process (no pipes, no concurrent fresh GL contexts)
+    and constructed directly. A spawn SubprocVecEnv gets: construction +
+    worker-ready delay + an all-worker get_attr readiness barrier + a
+    per-worker FIRST-RENDER WARM-UP (the vec env's real reset(), which is
+    where each worker lazily creates its offscreen GL context and
+    performs its first mjr_readPixels — the non-deterministic macOS
+    GL-on-Metal first-render wedge window), all under a SIGALRM watchdog
+    with bounded retry and full worker cleanup — a wedged attempt is
+    killed and rebuilt instead of hanging the run. Because every
+    construction through this path ends with a completed first reset,
+    Phases B/C inherit the coverage: model.learn()'s internal reset and
+    every later render run on already-created GL contexts. Timed regions
+    are never armed.
     """
     if kind != "subproc":
         return _make_topology(kind, grayscale)
@@ -278,11 +297,24 @@ def _make_topology_robust(kind: str, grayscale: bool = False):
             # Only when this returns is every worker provably in its
             # command loop.
             venv.get_attr("spec")
+            # First-render warm-up (route 2): the FIRST reset is where
+            # each worker lazily creates its offscreen GL context and
+            # performs its first mjr_readPixels (vision obs -> render
+            # inside reset_model -> _get_obs) — on macOS those GL calls
+            # ride the OpenGL-on-Metal layer and can wedge
+            # non-deterministically under 8-way concurrent first use.
+            # Running it HERE keeps the wedge inside the watchdoged
+            # construction window, so a wedged worker is killed/rebuilt/
+            # retried below instead of hanging the run, and every LATER
+            # reset/render (including model.learn()'s internal reset in
+            # Phases B/C) runs on already-created GL contexts.
+            venv.reset()
             signal.setitimer(signal.ITIMER_REAL, 0)
             if attempt > 1:
                 print(
                     f"[smoke] subproc construction succeeded on attempt "
-                    f"{attempt}/{CONSTRUCTION_ATTEMPTS} (macOS spawn race)",
+                    f"{attempt}/{CONSTRUCTION_ATTEMPTS} "
+                    f"(macOS GL-on-Metal first-render wedge)",
                     flush=True,
                 )
             return venv
@@ -291,8 +323,8 @@ def _make_topology_robust(kind: str, grayscale: bool = False):
             print(
                 f"[smoke] subproc construction attempt "
                 f"{attempt}/{CONSTRUCTION_ATTEMPTS} desynced (> "
-                f"{CONSTRUCTION_TIMEOUT_S:.0f} s — macOS spawn race); "
-                f"killing workers and retrying",
+                f"{CONSTRUCTION_TIMEOUT_S:.0f} s — macOS GL-on-Metal "
+                f"first-render wedge); killing workers and retrying",
                 flush=True,
             )
             if venv is not None:
@@ -304,7 +336,9 @@ def _make_topology_robust(kind: str, grayscale: bool = False):
             raise
     raise RuntimeError(
         f"subproc vec-env construction desynced after "
-        f"{CONSTRUCTION_ATTEMPTS} attempts (macOS spawn race)"
+        f"{CONSTRUCTION_ATTEMPTS} attempts (macOS GL-on-Metal "
+        f"first-render wedge — see "
+        f".planning/debug/subproc-topology-benchmark-hang.md)"
     ) from last
 
 
@@ -313,22 +347,78 @@ def _make_topology_robust(kind: str, grayscale: bool = False):
 # ---------------------------------------------------------------------------
 
 
+def _watched_reset_warmup(venv, kind: str, action) -> None:
+    """Untimed benchmark setup — reset + warm-up steps (route 1).
+
+    For non-subproc topologies this runs the reset and warm-up directly
+    (current behavior: the contention wedge needs concurrent fresh
+    processes, and kill/rebuild is meaningless in-process). For subproc it
+    runs under the SAME SIGALRM watchdog as construction: a worker whose
+    first or later GL exchange wedges in Apple's OpenGL-on-Metal layer
+    stalls this exchange, so _ConstructionTimeout (the same failure class
+    — an untimed-setup exchange desynced) propagates to the caller, which
+    kills and retries. The watchdog disarms in a finally — BEFORE the
+    caller's timed region, which is never armed."""
+    if kind != "subproc":
+        venv.reset()
+        for _ in range(TOPO_WARMUP_STEPS):  # untimed warm-up
+            venv.step(action)
+        return
+    signal.signal(signal.SIGALRM, _on_construction_alarm)
+    signal.setitimer(signal.ITIMER_REAL, BENCH_SETUP_TIMEOUT_S)
+    try:
+        venv.reset()
+        for _ in range(TOPO_WARMUP_STEPS):  # untimed warm-up
+            venv.step(action)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
+
 def _bench_topology(kind: str) -> tuple[float, list[float]]:
-    """Median env-steps/sec over TOPO_REPEATS repeats of warm-up-then-time."""
+    """Median env-steps/sec over TOPO_REPEATS repeats of warm-up-then-time.
+
+    Coverage contract (G-03-2): every UNTIMED setup exchange is bounded
+    for subproc — construction + readiness barrier + per-worker
+    first-render warm-up (inside _make_topology_robust) and this
+    benchmark's reset + warm-up steps (inside _watched_reset_warmup) —
+    with bounded kill/rebuild/retry-the-repeat on timeout. The timed
+    region (the TOPO_TIMED_STEPS perf_counter loop) is NEVER armed."""
     repeats: list[float] = []
     action = np.tile(np.asarray(C.HOME_CTRL, dtype=np.float32), (N_ENVS, 1))
     for _ in range(TOPO_REPEATS):
-        venv = _make_topology_robust(kind)  # constructed OUTSIDE the timed region
-        try:
-            venv.reset()
-            for _ in range(TOPO_WARMUP_STEPS):  # untimed warm-up
-                venv.step(action)
-            t0 = time.perf_counter()
-            for _ in range(TOPO_TIMED_STEPS):  # timed region
-                venv.step(action)
-            elapsed = time.perf_counter() - t0
-        finally:
-            _close_if_safe(venv, kind)
+        elapsed: float | None = None
+        venv = None
+        for attempt in range(1, BENCH_SETUP_ATTEMPTS + 1):
+            venv = _make_topology_robust(kind)  # constructed OUTSIDE the timed region
+            try:
+                _watched_reset_warmup(venv, kind, action)
+                t0 = time.perf_counter()
+                for _ in range(TOPO_TIMED_STEPS):  # timed region
+                    venv.step(action)
+                elapsed = time.perf_counter() - t0
+                break
+            except _ConstructionTimeout:
+                print(
+                    f"[smoke] topology {kind}: setup attempt "
+                    f"{attempt}/{BENCH_SETUP_ATTEMPTS} desynced (> "
+                    f"{BENCH_SETUP_TIMEOUT_S:.0f} s — macOS GL-on-Metal "
+                    f"first-render wedge); killing workers and retrying "
+                    f"the repeat",
+                    flush=True,
+                )
+                # Kill, NEVER close: SubprocVecEnv.close() joins workers
+                # with NO timeout, so closing a wedged venv re-hangs the
+                # run; _kill_venv already closes the remotes. Only the
+                # healthy path closes (below, via _close_if_safe).
+                _kill_venv(venv)
+        if elapsed is None:
+            raise RuntimeError(
+                f"topology {kind}: untimed setup desynced after "
+                f"{BENCH_SETUP_ATTEMPTS} attempts (macOS GL-on-Metal "
+                f"first-render wedge — see "
+                f".planning/debug/subproc-topology-benchmark-hang.md)"
+            )
+        _close_if_safe(venv, kind)
         repeats.append(TOPO_TIMED_STEPS * N_ENVS / elapsed)
         print(
             f"[smoke] topology {kind}: repeat {len(repeats)}/{TOPO_REPEATS} "

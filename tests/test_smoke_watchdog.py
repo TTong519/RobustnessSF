@@ -73,8 +73,9 @@ class _StubVenv:
 
 
 def _itimer_disarmed() -> bool:
-    """The SIGALRM itimer must be fully off (0.0, 0.0)."""
-    return signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0, 0)
+    """The SIGALRM itimer must be fully off: getitimer returns the
+    2-tuple (seconds, interval) — disarmed is exactly (0.0, 0.0)."""
+    return signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
 
 
 def test_hung_reset_is_bounded(monkeypatch):
