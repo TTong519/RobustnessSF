@@ -709,6 +709,14 @@ def main() -> int:
         record.pop("_norm")
         kind = record.pop("_kind")
         record["bitwise_equal"] = _reload_proof(winner, fmt, run_dir, model, coll)
+        # Close the trained chain AFTER the reload proof (the trained
+        # model's predict() never touches its vec env): on the subproc
+        # winner this kills the format's 8 spawn workers instead of
+        # leaving them idle with live GL contexts through the second
+        # train, both reloads, the gate evaluation, and the JSON write —
+        # stale render-capable workers are exactly the GL-contention
+        # exposure the hardening exists to remove. No-op for dummy.
+        _close_if_safe(model.env, kind)
         formats[fmt] = record
 
     # --- Phase D: gate evaluation + results JSON --------------------------
