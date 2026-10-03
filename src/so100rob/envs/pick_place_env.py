@@ -197,6 +197,36 @@ class SO100PickPlaceEnv(MujocoEnv):
         if self._jaw_act_idx < 0:
             raise ValueError("actuator 'Jaw' not found in compiled model")
 
+        # Fail-loudly arm-joint verification (the same name-resolution
+        # pattern as the cube and Jaw lookups): _get_obs reads the arm
+        # blocks as the positional slices qpos[:6]/qvel[:6], so
+        # construction must PROVE the compiled model's first six
+        # qpos/qvel rows are exactly C.JOINT_NAMES in order. If the
+        # read-only upstream XML ever gained or reordered joints, the env
+        # must refuse to construct — otherwise the observation would
+        # silently read the wrong physics (no crash; the finite guard
+        # passes) and invalidate every downstream VecNormalize/PPO
+        # checkpoint, the class the constants file labels "COSTLY".
+        arm_joint_ids = [
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, n)
+            for n in C.JOINT_NAMES
+        ]
+        if any(jid < 0 for jid in arm_joint_ids):
+            missing = [n for n, jid in zip(C.JOINT_NAMES, arm_joint_ids) if jid < 0]
+            raise ValueError(f"arm joints not found in compiled model: {missing}")
+        arm_qposadr = [int(self.model.jnt_qposadr[jid]) for jid in arm_joint_ids]
+        arm_dofadr = [int(self.model.jnt_dofadr[jid]) for jid in arm_joint_ids]
+        if arm_qposadr != list(range(len(C.JOINT_NAMES))) or arm_dofadr != list(
+            range(len(C.JOINT_NAMES))
+        ):
+            raise ValueError(
+                f"arm joints {C.JOINT_NAMES} are not the compiled model's first "
+                f"{len(C.JOINT_NAMES)} qpos/qvel rows (qpos addresses "
+                f"{arm_qposadr}, dof addresses {arm_dofadr}) — the "
+                f"qpos[:{len(C.JOINT_NAMES)}]/qvel[:{len(C.JOINT_NAMES)}] "
+                f"observation blocks would read the wrong physics"
+            )
+
         # Episode-local stage/reward state placeholders — reset_model owns
         # the authoritative clearing (Pitfall 6); these exist so the
         # attributes are defined even before the first reset.
