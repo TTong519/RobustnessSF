@@ -7,6 +7,7 @@
   "gate_arithmetic": "required_throughput_steps_per_sec = ceil(phase4_budget_steps / (window_hours x 3600 s)) = ceil(1.5e6 / 43200) = ceil(34.72) = 35 (D-04: the floor derives from the Phase 4 baseline budget and the acceptable wall-clock training window, agreed BEFORE measurement).",
   "rule": "measured full-smoke PPO training throughput of the chosen image format >= required_throughput_steps_per_sec -> vision; below -> state-only fallback (D-12)",
   "format_rule": "higher measured steps/sec wins; within a relative 10% band -> grayscale",
+  "format_rule_tie_band_rel": 0.10,
   "format_rule_rationale": "D-05: the format is decided from measured numbers, not a priori. Grayscale wins ties because its first conv layer is 1->32 instead of 3->32 input channels, the fixed-lit scene makes color near-redundant for this task, and Phase 1 measured raw near-parity (gray64 286.6 vs rgb64 293.0 steps/s) so throughput alone cannot separate them.",
   "decided_by": "Phase 3 decision D-04 (03-CONTEXT.md): the vision-vs-state-only gate is pre-agreed numerically BEFORE the smoke run is executed, so a borderline measured number cannot be rationalized post-hoc. Research assumption A1 proposed the numbers (1.5M-step Phase 4 baseline budget per the roadmap, 12 h overnight window); the blocking decision checkpoint (03-03-PLAN Task 2) is the user's pre-agreement moment. One-way: the Phase 4 policy architecture (CnnPolicy on stacked 64x64 frames vs MlpPolicy on the 28-dim state) derives from this gate.",
   "pinned_at": "2026-09-23",

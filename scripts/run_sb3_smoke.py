@@ -118,9 +118,13 @@ TOPO_REPEATS = 3               # median of >= 3 (the benchmark.py protocol)
 SEED = 0                       # identical for both formats (comparability)
 FORMATS = ("rgb", "grayscale")  # D-05 candidates, measured identically
 
-# D-05 tie band, verbatim from the pin (config/obs_gate.json format_rule):
-# "higher measured steps/sec wins; within a relative 10% band -> grayscale".
-TIE_BAND_REL = 0.10
+# D-05 tie band: READ from the pin's machine-readable
+# format_rule_tie_band_rel field at gate evaluation (config/obs_gate.json —
+# WR-02), never re-hardcoded here. The pin's format_rule prose ("higher
+# measured steps/sec wins; within a relative 10% band -> grayscale") is
+# cross-checked against the numeric field in _evaluate_gate so a re-pin
+# that changes either side fails loudly instead of silently disagreeing
+# with the committed pin.
 
 # --- macOS GL-on-Metal first-render wedge hardening (03-04, G-03-2) -------
 # Root cause (diagnosed with per-worker faulthandler dumps + macOS
@@ -617,23 +621,43 @@ def _evaluate_gate(gate: dict, formats: dict, coll: _Collector) -> dict:
         f"{gate['required_throughput_steps_per_sec']}",
     )
 
+    # The D-05 tie band ALSO comes from the pin (WR-02): the
+    # machine-readable format_rule_tie_band_rel field, cross-checked
+    # against the pin's format_rule prose. A re-pin that changes either
+    # side (or drops the field) fails loudly here instead of the runner
+    # silently applying a different selection rule than the committed pin.
+    if "format_rule_tie_band_rel" not in gate:
+        raise ValueError(
+            "config/obs_gate.json is missing the D-05 tie band field "
+            "'format_rule_tie_band_rel' — the runner never re-hardcodes it"
+        )
+    tie_band_rel = float(gate["format_rule_tie_band_rel"])
+    prose_band = f"{tie_band_rel * 100:.0f}% band"
+    coll.check(
+        "gate_tie_band_pin_consistent",
+        0.0 < tie_band_rel < 1.0 and prose_band in str(gate.get("format_rule", "")),
+        f"pin field format_rule_tie_band_rel={tie_band_rel} is inconsistent "
+        f"with the format_rule prose (expected {prose_band!r} in "
+        f"{gate.get('format_rule')!r})",
+    )
+
     rgb_sps = formats["rgb"]["steps_per_sec"]
     gray_sps = formats["grayscale"]["steps_per_sec"]
     # D-05, verbatim from the pin: "higher measured steps/sec wins; within a
     # relative 10% band -> grayscale".
     rel_diff = abs(rgb_sps - gray_sps) / max(rgb_sps, gray_sps)
-    if rel_diff <= TIE_BAND_REL:
+    if rel_diff <= tie_band_rel:
         chosen_fmt = "grayscale"
         d05_applied = (
             f"tie band: rgb {rgb_sps:.1f} vs grayscale {gray_sps:.1f} steps/s "
-            f"(relative difference {rel_diff * 100:.1f}% <= {TIE_BAND_REL * 100:.0f}%) "
+            f"(relative difference {rel_diff * 100:.1f}% <= {tie_band_rel * 100:.0f}%) "
             f"-> grayscale"
         )
     else:
         chosen_fmt = "rgb" if rgb_sps > gray_sps else "grayscale"
         d05_applied = (
             f"higher wins: rgb {rgb_sps:.1f} vs grayscale {gray_sps:.1f} steps/s "
-            f"(relative difference {rel_diff * 100:.1f}% > {TIE_BAND_REL * 100:.0f}%) "
+            f"(relative difference {rel_diff * 100:.1f}% > {tie_band_rel * 100:.0f}%) "
             f"-> {chosen_fmt}"
         )
 
