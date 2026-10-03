@@ -70,8 +70,12 @@ def vision_env():
         height=64,
     )
     env_.reset(seed=0)
+    # NEVER closed at teardown (WR-04, the one suite-wide discipline):
+    # gymnasium 1.3.0's OffScreenViewer.close() calls glfw.terminate() — a
+    # process-global teardown that blackens every other live offscreen
+    # viewer. The GL context is freed by OffScreenViewer.__del__ at GC, the
+    # same pattern test_obs_space.py and test_sb3_pipeline.py follow.
     yield env_
-    env_.close()
 
 
 @pytest.fixture()
@@ -91,8 +95,9 @@ def gray_env():
         grayscale=True,
     )
     env_.reset(seed=0)
+    # NEVER closed at teardown (WR-04): same OffScreenViewer/glfw.terminate()
+    # hazard as vision_env — see that fixture's comment.
     yield env_
-    env_.close()
 
 
 @pytest.fixture()

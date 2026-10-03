@@ -21,8 +21,13 @@ from so100rob.envs.pick_place_env import SO100PickPlaceEnv
 @pytest.fixture()
 def env():
     env = SO100PickPlaceEnv(frame_skip=25, render_mode="rgb_array")
+    # NEVER closed at teardown (WR-04, the one suite-wide discipline):
+    # this rgb_array env's viewer is created by the render test below, and
+    # gymnasium 1.3.0's OffScreenViewer.close() calls glfw.terminate() — a
+    # process-global teardown that blackens every other live offscreen
+    # viewer in the session (test_obs_space.py, test_sb3_pipeline.py). The
+    # GL context is freed by __del__ at GC, the pattern those suites follow.
     yield env
-    env.close()
 
 
 def test_constructs_with_pinned_timestep(env):
