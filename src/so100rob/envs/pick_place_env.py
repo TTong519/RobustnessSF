@@ -72,7 +72,7 @@ def load_spawn_grid(path: Path | str) -> np.ndarray:
             raise ValueError(f"{path}: spawn entry {i} must have exactly 3 coordinates, got {len(coords)}")
         if not all(math.isfinite(v) for v in coords):
             raise ValueError(f"{path}: spawn entry {i} has non-finite coordinates: {entry!r}")
-        x, y, _ = coords
+        x, y, z = coords
         if not C.SPAWN_PATCH_X[0] <= x <= C.SPAWN_PATCH_X[1]:
             raise ValueError(
                 f"{path}: spawn entry {i} x={x} outside the patch x-bounds {C.SPAWN_PATCH_X}"
@@ -80,6 +80,17 @@ def load_spawn_grid(path: Path | str) -> np.ndarray:
         if not C.SPAWN_PATCH_Y[0] <= y <= C.SPAWN_PATCH_Y[1]:
             raise ValueError(
                 f"{path}: spawn entry {i} y={y} outside the patch y-bounds {C.SPAWN_PATCH_Y}"
+            )
+        # z is validated too (T-01-03 full-schema): a corrupted z would
+        # otherwise flow straight into reset_model's cube overwrite — a
+        # grossly wrong z fails only later at the settle guard far from
+        # the root cause, and a mildly wrong z can settle to rest and
+        # silently pass. The pinned spawn z is SPAWN_Z (~0.5 mm above the
+        # floor); the accepted band runs from the rest-band floor to it.
+        if not C.CUBE_REST_Z_RANGE[0] <= z <= C.SPAWN_Z + 1e-9:
+            raise ValueError(
+                f"{path}: spawn entry {i} z={z} outside the accepted spawn z band "
+                f"[{C.CUBE_REST_Z_RANGE[0]}, {C.SPAWN_Z}]"
             )
         grid[i] = coords
     return grid
