@@ -64,9 +64,21 @@ def reset_to_settled_spawn(model, data):
     origin, half inside the floor), then raw-physics settle to rest.
     """
     home_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, C.HOME_KEY)
+    if home_id < 0:
+        # This tool runs exactly while scene_pickplace.xml is being hand-edited
+        # (its stated purpose) — a mid-edit model with a momentarily missing
+        # keyframe must fail loudly, never feed keyframe id -1 into
+        # mj_resetDataKeyframe (out-of-bounds C-API read: crash or garbage).
+        raise ValueError(f"keyframe {C.HOME_KEY!r} not found — is the scene XML mid-edit?")
     mujoco.mj_resetDataKeyframe(model, data, home_id)
 
     cube_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, C.CUBE_JOINT)
+    if cube_id < 0:
+        # Same fail-loudly guard as the env constructor (pick_place_env.py):
+        # a -1 joint id silently negative-index-wraps to the LAST joint's
+        # qpos/dof address in the SPAWN_CENTER overwrite below — the COSTLY
+        # silent-corruption class.
+        raise ValueError(f"cube joint {C.CUBE_JOINT!r} not found in compiled model")
     qposadr = model.jnt_qposadr[cube_id]
     dofadr = model.jnt_dofadr[cube_id]
 
@@ -80,9 +92,12 @@ def reset_to_settled_spawn(model, data):
 
     cube_qvel = np.asarray(data.qvel[dofadr : dofadr + 6])
     qvel_norm = float(np.linalg.norm(cube_qvel))
-    assert qvel_norm < C.REST_QVEL_TOL, (
-        f"unsettled cube spawn: qvel norm {qvel_norm:.3e} >= {C.REST_QVEL_TOL:.3e}"
-    )
+    # Explicit raise, not a bare assert (project convention, commit e6b4db6):
+    # python -O strips asserts without error.
+    if not qvel_norm < C.REST_QVEL_TOL:
+        raise ValueError(
+            f"unsettled cube spawn: qvel norm {qvel_norm:.3e} >= {C.REST_QVEL_TOL:.3e}"
+        )
     return qvel_norm
 
 
