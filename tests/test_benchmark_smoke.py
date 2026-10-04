@@ -86,3 +86,7 @@ def test_quick_benchmark_output_structure():
     versions = data["versions"]
     for pkg in ("mujoco", "gymnasium", "torch", "numpy"):
         assert pkg in versions and versions[pkg], versions
+
+    # The Pitfall 8 sanity gate must actually gate (WR-02): a FAIL status
+    # must never ride out in officially consumable JSON.
+    assert data["sanity_gate"]["status"] == "OK", data["sanity_gate"]

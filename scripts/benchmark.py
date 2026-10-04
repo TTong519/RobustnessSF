@@ -288,6 +288,16 @@ def run_benchmark(steps: int, repeats: int, warmup: int, quick: bool) -> Path:
         "results": entries,
     }
     out_path.write_text(json.dumps(payload, indent=2) + "\n")
+
+    # The sanity gate must actually GATE (WR-02): the failing results.json is
+    # written first (evidence for debugging), then the run fails loudly — a
+    # FAIL status must never reach a downstream consumer via exit 0.
+    if sanity != "OK":
+        raise RuntimeError(
+            f"Pitfall 8 sanity gate FAILED (state_only={state_raw:.1f} vs "
+            f"slowest render raw={slowest_render:.1f}, ratio {ratio:.1f}x) — "
+            "state_only may be rendering"
+        )
     return out_path
 
 
