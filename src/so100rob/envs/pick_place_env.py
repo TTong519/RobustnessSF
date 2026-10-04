@@ -182,9 +182,18 @@ class SO100PickPlaceEnv(MujocoEnv):
         self._reset_options: dict | None = None
 
         # Cached cube joint addressing (constant for the compiled model).
+        # Fail loudly on a missing cube joint (the same name-resolution
+        # pattern as the Jaw and arm-joint checks below): mj_name2id
+        # returns -1 for an unknown name, and a -1 index would silently
+        # wrap to the LAST joint's qpos/dof address via numpy negative
+        # indexing — every cube block would read the wrong physics with
+        # no crash and no failed finite guard (the "COSTLY" silent-
+        # corruption class).
         self._cube_joint_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_JOINT, C.CUBE_JOINT
         )
+        if self._cube_joint_id < 0:
+            raise ValueError(f"cube joint {C.CUBE_JOINT!r} not found in compiled model")
         self._cube_qposadr = self.model.jnt_qposadr[self._cube_joint_id]
         self._cube_dofadr = self.model.jnt_dofadr[self._cube_joint_id]
 
