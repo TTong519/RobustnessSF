@@ -1,8 +1,8 @@
 """ENV-02: spawn reproducibility — frozen seed grid + grid/continuous modes.
 
 The 25-spawn 5x5 grid is frozen as checked-in data
-(config/spawn_seeds.json, D-11): reproducibility is proven by data-file
-equality, not RNG discipline. Grid resets take options={"spawn_index": i};
+(src/so100rob/data/spawn_seeds.json, D-11): reproducibility is proven by
+data-file equality, not RNG discipline. Grid resets take options={"spawn_index": i};
 continuous mode (baseline training, D-12) samples uniformly over the patch
 from the env's seeded generator.
 """
@@ -22,7 +22,7 @@ XY_TOL = 1e-4
 
 
 def load_seed_entries():
-    """Read config/spawn_seeds.json and return the raw 25-entry list."""
+    """Read the frozen spawn-seed data file and return the raw 25-entry list."""
     with open(C.SPAWN_SEEDS_PATH) as f:
         raw = json.load(f)
     entries = raw["spawns"] if isinstance(raw, dict) and "spawns" in raw else raw

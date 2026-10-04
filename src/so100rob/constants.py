@@ -79,9 +79,12 @@ SPAWN_PATCH_Y: tuple[float, float] = (-0.252, -0.202)
 
 # Frozen spawn protocol (D-09/D-10/D-11): the 25 evaluation spawns are
 # checked-in DATA, never re-derived at runtime. The env loads this file
-# verbatim; the Phase 5 protocol freeze references it by hash.
+# verbatim; the Phase 5 protocol freeze references it by hash. The file
+# lives INSIDE the package (like assets/scene_pickplace.xml) so a wheel or
+# non-editable install ships it — grid mode is the default spawn_mode, and
+# a path outside the package would break every default env construction.
 SPAWN_GRID_SIZE: int = 25
-SPAWN_SEEDS_PATH: Path = Path(__file__).resolve().parents[2] / "config" / "spawn_seeds.json"
+SPAWN_SEEDS_PATH: Path = Path(__file__).parent / "data" / "spawn_seeds.json"
 
 # Default spawn: patch center, ~0.5 mm above the floor (settle protocol).
 SPAWN_CENTER: tuple[float, float, float] = (0.0, -0.227, 0.0155)

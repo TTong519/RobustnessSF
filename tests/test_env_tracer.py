@@ -40,7 +40,7 @@ def test_reset_spawns_settled_cube_at_patch_center(env):
 
     Plan 01-02 froze the grid protocol: default reset uses spawn_index 0,
     so the patch center (SPAWN_CENTER) must be requested explicitly — it is
-    grid entry 12 of config/spawn_seeds.json.
+    grid entry 12 of the frozen spawn-seed data file.
     """
     env.reset(seed=0, options={"spawn_index": 12})
 
