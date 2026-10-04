@@ -45,7 +45,8 @@ from so100rob.scripted_policy import (
     resting_at_goal,
 )
 
-RUNS_ROOT = Path("runs") / "gate"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RUNS_ROOT = REPO_ROOT / "runs" / "gate"
 
 
 def _cube_addressing(env) -> tuple[int, int]:
