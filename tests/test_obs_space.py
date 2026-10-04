@@ -345,17 +345,19 @@ def test_state_identical_across_modes():
 
 
 def test_obs_nonfinite_fails_loudly():
-    """T-03-01: NaN cube state makes _get_obs raise AssertionError, never emit an observation.
+    """T-03-01: NaN cube state makes _get_obs raise ValueError, never emit an observation.
 
     Non-finite physics must fail loudly at the simulator->observation trust
     boundary instead of silently poisoning the vector the policy trains on.
+    The guard is an explicit raise (not a bare assert) so it survives
+    python -O (WR-03).
     """
     env = SO100PickPlaceEnv()
     try:
         env.reset(seed=0)
         adr, _dof_adr = _cube_addresses(env)
         env.data.qpos[adr : adr + 3] = np.nan
-        with pytest.raises(AssertionError, match="T-03-01"):
+        with pytest.raises(ValueError, match="T-03-01"):
             env._get_obs()
     finally:
         env.close()

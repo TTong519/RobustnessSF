@@ -266,8 +266,8 @@ class SO100PickPlaceEnv(MujocoEnv):
         mode returns it flat, vision mode returns it as the Dict's "state"
         entry with the rendered "image" key purely additive. Assembly draws
         NO RNG (Pitfall 10 — check_env's seeded-reset determinism depends on
-        it) and asserts every block finite so NaN/Inf physics fails loudly
-        instead of poisoning the observation (T-03-01).
+        it) and raises ValueError on any non-finite block so NaN/Inf physics
+        fails loudly instead of poisoning the observation (T-03-01).
         """
         qpos = self.data.qpos
         qvel = self.data.qvel
@@ -285,22 +285,29 @@ class SO100PickPlaceEnv(MujocoEnv):
         gripper_to_cube = pad_midpoint - cube_pos
         cube_to_goal = cube_pos - np.asarray(C.GOAL_POS, dtype=np.float64)
 
-        # Fail-loudly finite guard (the _gather_readout assert style, threat
+        # Fail-loudly finite guard (the _gather_readout style, threat
         # T-03-01): non-finite physics must never become an observation.
-        assert all(
-            np.isfinite(v).all()
-            for v in (
-                arm_qpos,
-                arm_qvel,
-                cube_pos,
-                cube_qvel,
-                gripper_to_cube,
-                cube_to_goal,
+        # An explicit raise, NOT a bare assert — python -O strips asserts,
+        # which would silently disable this guard exactly where Phase 4/5
+        # run the env.
+        if not (
+            all(
+                np.isfinite(v).all()
+                for v in (
+                    arm_qpos,
+                    arm_qvel,
+                    cube_pos,
+                    cube_qvel,
+                    gripper_to_cube,
+                    cube_to_goal,
+                )
             )
-        ) and math.isfinite(cube_yaw), (
-            "non-finite simulation state in the observation — NaN/Inf "
-            "physics must fail loudly, never poison the observation (T-03-01)"
-        )
+            and math.isfinite(cube_yaw)
+        ):
+            raise ValueError(
+                "non-finite simulation state in the observation — NaN/Inf "
+                "physics must fail loudly, never poison the observation (T-03-01)"
+            )
 
         state = np.concatenate(
             [
@@ -343,7 +350,7 @@ class SO100PickPlaceEnv(MujocoEnv):
 
         Read from the cached name-resolved cube addresses plus
         grasp_point(model, data) and the applied action's jaw ctrl. The
-        readout is guarded with np.isfinite asserts (threat T-02-01) —
+        readout is guarded with np.isfinite raises (threat T-02-01) —
         NaN/Inf physics state fails loudly here instead of silently
         becoming stage flags or reward.
         """
@@ -353,13 +360,21 @@ class SO100PickPlaceEnv(MujocoEnv):
         jaw_ctrl_applied = float(np.asarray(action).reshape(-1)[self._jaw_act_idx])
         approach_dist_m = float(np.linalg.norm(pad_midpoint[:2] - cube_pos[:2]))
 
-        assert all(
-            np.isfinite(v).all() if isinstance(v, np.ndarray) else np.isfinite(v)
-            for v in (cube_pos, cube_qvel, pad_midpoint)
-        ) and math.isfinite(jaw_ctrl_applied) and math.isfinite(approach_dist_m), (
-            "non-finite simulation state in the stage readout — NaN/Inf "
-            "physics must fail loudly, never poison stage flags/reward (T-02-01)"
-        )
+        # Fail-loudly finite guard (threat T-02-01): an explicit raise,
+        # NOT a bare assert — python -O strips asserts and would silently
+        # let NaN/Inf physics become stage flags and reward.
+        if not (
+            all(
+                np.isfinite(v).all() if isinstance(v, np.ndarray) else np.isfinite(v)
+                for v in (cube_pos, cube_qvel, pad_midpoint)
+            )
+            and math.isfinite(jaw_ctrl_applied)
+            and math.isfinite(approach_dist_m)
+        ):
+            raise ValueError(
+                "non-finite simulation state in the stage readout — NaN/Inf "
+                "physics must fail loudly, never poison stage flags/reward (T-02-01)"
+            )
         return stages.SimReadout(
             cube_pos=cube_pos,
             cube_qvel=cube_qvel,
@@ -455,8 +470,8 @@ class SO100PickPlaceEnv(MujocoEnv):
              zero the cube qvel.
           3. mj_forward, then SETTLE_STEPS raw physics steps — settle is not
              a control step, so raw mj_step, not do_simulation.
-          4. Assert the cube is at rest before returning (Pitfall 7 — never
-             return an unsettled spawn).
+          4. Verify the cube is at rest before returning (Pitfall 7 — never
+             return an unsettled spawn; raises if not).
         """
         home_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, C.HOME_KEY)
         mujoco.mj_resetDataKeyframe(self.model, self.data, home_id)
@@ -472,11 +487,14 @@ class SO100PickPlaceEnv(MujocoEnv):
 
         cube_qvel = np.asarray(self.data.qvel[self._cube_dofadr : self._cube_dofadr + 6])
         cube_qvel_norm = float(np.linalg.norm(cube_qvel))
-        assert cube_qvel_norm < C.REST_QVEL_TOL, (
-            "unsettled cube spawn: qvel norm "
-            f"{cube_qvel_norm:.3e} >= {C.REST_QVEL_TOL:.3e} — never return a "
-            "still-falling/bouncing spawn (Pitfall 7)"
-        )
+        # Pitfall 7 guard as an explicit raise, NOT a bare assert (python
+        # -O strips asserts — the env is the primary guard for Phase 4/5).
+        if not cube_qvel_norm < C.REST_QVEL_TOL:
+            raise ValueError(
+                "unsettled cube spawn: qvel norm "
+                f"{cube_qvel_norm:.3e} >= {C.REST_QVEL_TOL:.3e} — never return a "
+                "still-falling/bouncing spawn (Pitfall 7)"
+            )
 
         # Episode-local stage/reward state: a FRESH machine on every reset
         # (Pitfall 6 — flags, grasp-window counter, step counter, terminal
