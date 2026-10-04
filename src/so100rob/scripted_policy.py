@@ -287,7 +287,9 @@ def build_trajectory(
 
     qpos0, qvel0, ctrl0 = data.qpos.copy(), data.qvel.copy(), data.ctrl.copy()
     try:
-        # Deterministic IK warm start: arm at the home keyframe pose.
+        # Deterministic warm start: the first solve begins at the home keyframe
+        # pose; each subsequent solve warm-starts from the previous waypoint's
+        # solution.
         for name, q in zip(C.JOINT_NAMES, C.HOME_QPOS):
             data.qpos[ctx.qadr[name]] = q
 

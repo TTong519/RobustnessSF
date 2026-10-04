@@ -247,9 +247,6 @@ class SO100PickPlaceEnv(MujocoEnv):
                 f"observation blocks would read the wrong physics"
             )
 
-        # Episode-local stage/reward state placeholders — reset_model owns
-        # the authoritative clearing (Pitfall 6); these exist so the
-        # attributes are defined even before the first reset.
         # Cached home keyframe id, resolved BY NAME and cached once (the
         # same fail-loud name-resolution pattern as the cube, Jaw, and
         # arm-joint checks above). reset_model feeds this id to
@@ -265,6 +262,9 @@ class SO100PickPlaceEnv(MujocoEnv):
         if self._home_key_id < 0:
             raise ValueError(f"keyframe {C.HOME_KEY!r} not found in compiled model")
 
+        # Episode-local stage/reward state placeholders — reset_model owns
+        # the authoritative clearing (Pitfall 6); these exist so the
+        # attributes are defined even before the first reset.
         self._stage = stages.StageState()
         self._elapsed_steps = 0
         self._terminal_paid = False

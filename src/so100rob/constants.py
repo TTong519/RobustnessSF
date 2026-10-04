@@ -96,7 +96,8 @@ SPAWN_PATCH_Y: tuple[float, float] = (-0.252, -0.202)
 SPAWN_GRID_SIZE: int = 25
 SPAWN_SEEDS_PATH: Path = Path(__file__).parent / "data" / "spawn_seeds.json"
 
-# Default spawn: patch center, ~0.5 mm above the floor (settle protocol).
+# Patch-center representative spawn (grid entry 12); the default grid
+# reset is entry 0 (patch corner). ~0.5 mm above the floor (settle protocol).
 SPAWN_CENTER: tuple[float, float, float] = (0.0, -0.227, 0.0155)
 SPAWN_Z: float = 0.0155
 
@@ -248,5 +249,8 @@ OBS_STATE_DIM: int = 28
 
 # Rec.601 luma weights for the grayscale image conversion (D-05 gray
 # candidate) — mirrors scripts/benchmark.py's _LUMA so the env-side
-# conversion and the benchmark's timed conversion are the same transform.
+# conversion and the benchmark's timed conversion apply the same
+# luma -> rint -> clip transform; the benchmark additionally rescales
+# its mock-CNN input to [0, 1] (matching SB3's internal uint8
+# normalization).
 OBS_LUMA: tuple[float, float, float] = (0.2989, 0.5870, 0.1140)

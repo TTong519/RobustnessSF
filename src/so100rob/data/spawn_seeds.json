@@ -10,15 +10,15 @@
     -0.202
   ],
   "corner_radii_approx": [
-    0.202,
-    0.253
+    0.2035,
+    0.2532
   ],
   "grid_shape": [
     5,
     5
   ],
   "index_order": "index = row * 5 + col; rows iterate y from -0.252 to -0.202, cols iterate x from -0.025 to 0.025",
-  "note": "A3 resolution (01-RESEARCH.md Open Question 2): the 5x5 cm square was adopted over the r~0.21-0.25 band, which a square cannot satisfy exactly at the corners. Corner radii span approximately 0.202-0.253 m; recorded here for auditability.",
+  "note": "A3 resolution (01-RESEARCH.md Open Question 2): the 5x5 cm square was adopted over the r~0.21-0.25 band, which a square cannot satisfy exactly at the corners. Corner radii span approximately 0.2035-0.2532 m; recorded here for auditability.",
   "spawns": [
     [
       -0.025,

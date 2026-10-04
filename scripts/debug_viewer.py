@@ -68,7 +68,9 @@ def reset_to_settled_spawn(model, data):
         # This tool runs exactly while scene_pickplace.xml is being hand-edited
         # (its stated purpose) — a mid-edit model with a momentarily missing
         # keyframe must fail loudly, never feed keyframe id -1 into
-        # mj_resetDataKeyframe (out-of-bounds C-API read: crash or garbage).
+        # mj_resetDataKeyframe (verified against the pinned mujoco 3.12.0:
+        # it silently degrades to a plain mj_resetData, zeroing all qpos
+        # AND ctrl — the COSTLY silent-corruption class).
         raise ValueError(f"keyframe {C.HOME_KEY!r} not found — is the scene XML mid-edit?")
     mujoco.mj_resetDataKeyframe(model, data, home_id)
 

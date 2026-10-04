@@ -9,7 +9,8 @@
   <option> attributes win (timestep, integrator) while upstream settings are
   preserved (cone="elliptic" impratio="10"); the <compiler meshdir> override is
   REQUIRED because upstream meshdir="assets/" resolves relative to THIS file's
-  directory (three levels above the repo-root model dir).
+  directory, but the upstream model dir sits at the repo root,
+  three levels above this file.
 
   PACKAGING SCOPE: the include/meshdir paths above are repo-tree-relative
   BY DESIGN — MuJoCo resolves them against this file's directory, and from

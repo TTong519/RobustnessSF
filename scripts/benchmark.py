@@ -115,8 +115,11 @@ def frame_to_input(frame: np.ndarray, gray: bool) -> torch.Tensor:
     conversion'), so it belongs in this pipeline, not the raw mode's loop.
     """
     if gray:
-        arr = frame.astype(np.float32) @ _LUMA  # (H, W)
+        # Mirrors the env-side luma -> rint -> clip transform (the env's
+        # grayscale _get_obs), plus the /255 mock-CNN input rescale.
+        arr = np.rint(frame.astype(np.float32) @ _LUMA).clip(0, 255)  # (H, W)
         t = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+        t = t.to(torch.float32).div_(255.0)
     else:
         # ascontiguousarray: mujoco render returns a vertically-flipped
         # (negative-stride) array that torch.from_numpy rejects — one copy
