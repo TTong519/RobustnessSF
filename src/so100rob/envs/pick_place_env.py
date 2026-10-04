@@ -250,6 +250,21 @@ class SO100PickPlaceEnv(MujocoEnv):
         # Episode-local stage/reward state placeholders — reset_model owns
         # the authoritative clearing (Pitfall 6); these exist so the
         # attributes are defined even before the first reset.
+        # Cached home keyframe id, resolved BY NAME and cached once (the
+        # same fail-loud name-resolution pattern as the cube, Jaw, and
+        # arm-joint checks above). reset_model feeds this id to
+        # mj_resetDataKeyframe on every reset: a -1 keyframe id makes it
+        # silently degrade to a plain mj_resetData (verified against the
+        # pinned mujoco 3.12.0), zeroing all qpos AND ctrl, so every
+        # episode would start from a corrupt all-zero arm pose with no
+        # crash and no failed settle guard (the settle check reads only
+        # the cube qvel).
+        self._home_key_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_KEY, C.HOME_KEY
+        )
+        if self._home_key_id < 0:
+            raise ValueError(f"keyframe {C.HOME_KEY!r} not found in compiled model")
+
         self._stage = stages.StageState()
         self._elapsed_steps = 0
         self._terminal_paid = False
@@ -464,7 +479,8 @@ class SO100PickPlaceEnv(MujocoEnv):
         Order matters (research Pattern 2 / Pitfall 1):
           1. mj_resetDataKeyframe(home) — sets BOTH qpos and ctrl;
              the cube freejoint pose comes back zero-padded to world origin
-             (half inside the floor).
+             (half inside the floor). The keyframe id was resolved and
+             checked once in the constructor (_home_key_id).
           2. Overwrite cube qpos with the selected spawn (grid entry or
              continuous sample; w-first quaternion, fixed yaw per D-03) and
              zero the cube qvel.
@@ -473,8 +489,7 @@ class SO100PickPlaceEnv(MujocoEnv):
           4. Verify the cube is at rest before returning (Pitfall 7 — never
              return an unsettled spawn; raises if not).
         """
-        home_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, C.HOME_KEY)
-        mujoco.mj_resetDataKeyframe(self.model, self.data, home_id)
+        mujoco.mj_resetDataKeyframe(self.model, self.data, self._home_key_id)
 
         x, y, z = self._sample_spawn()
         self.data.qpos[self._cube_qposadr : self._cube_qposadr + 3] = (x, y, z)
