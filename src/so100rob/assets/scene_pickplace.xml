@@ -10,6 +10,16 @@
   preserved (cone="elliptic" impratio="10"); the <compiler meshdir> override is
   REQUIRED because upstream meshdir="assets/" resolves relative to THIS file's
   directory (three levels above the repo-root model dir).
+
+  PACKAGING SCOPE: the include/meshdir paths above are repo-tree-relative
+  BY DESIGN — MuJoCo resolves them against this file's directory, and from
+  an installed (site-packages) copy they would point above site-packages
+  where trs_so_arm100/ does not exist. so100rob is therefore a repo-tree /
+  editable-install package; the pyproject wheel target exists for
+  dependency declaration, not deployment. Vendoring the pinned upstream
+  model into the package was considered and rejected: it relocates a
+  reviewed third-party dependency and buys nothing for a local-Mac-only
+  experiment.
 -->
 <mujoco model="scene_pickplace">
   <include file="../../../trs_so_arm100/so_arm100.xml"/>

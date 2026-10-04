@@ -48,6 +48,11 @@ GOAL_SITE: str = "goal_site"
 CAMERA_NAME: str = "overhead"
 HOME_KEY: str = "home"
 
+# NOTE: the scene XML includes the pinned upstream robot model via a
+# repo-tree-relative path (trs_so_arm100/ at the repo root), so env
+# construction requires the repo tree (an editable install); the
+# pyproject wheel target exists for dependency declaration, not
+# deployment. See scene_pickplace.xml's header comment.
 SCENE_XML_PATH: Path = Path(__file__).parent / "assets" / "scene_pickplace.xml"
 
 # ---------------------------------------------------------------------------
@@ -80,9 +85,14 @@ SPAWN_PATCH_Y: tuple[float, float] = (-0.252, -0.202)
 # Frozen spawn protocol (D-09/D-10/D-11): the 25 evaluation spawns are
 # checked-in DATA, never re-derived at runtime. The env loads this file
 # verbatim; the Phase 5 protocol freeze references it by hash. The file
-# lives INSIDE the package (like assets/scene_pickplace.xml) so a wheel or
-# non-editable install ships it — grid mode is the default spawn_mode, and
-# a path outside the package would break every default env construction.
+# lives INSIDE the package (like assets/scene_pickplace.xml) for
+# consistency, and because grid mode is the default spawn_mode — a path
+# outside the package would break every default env construction. This
+# does NOT by itself make the package wheel-deployable: the scene XML
+# still reaches out to the repo tree for the upstream robot model (see
+# the SCENE_XML_PATH note above), so so100rob is a repo-tree /
+# editable-install package and the wheel target is for dependency
+# declaration, not deployment.
 SPAWN_GRID_SIZE: int = 25
 SPAWN_SEEDS_PATH: Path = Path(__file__).parent / "data" / "spawn_seeds.json"
 

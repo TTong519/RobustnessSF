@@ -22,6 +22,12 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Wheel target: exists for dependency declaration, NOT deployment.
+# so100rob/assets/scene_pickplace.xml includes the pinned upstream robot
+# model via a repo-tree-relative path (trs_so_arm100/ at the repo root),
+# which MuJoCo resolves relative to the XML file — from an installed copy
+# that path points above site-packages and model compile fails. The package
+# requires the repo tree (editable install) to construct the env.
 [tool.hatch.build.targets.wheel]
 packages = ["src/so100rob"]
 
