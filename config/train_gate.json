@@ -1,0 +1,57 @@
+{
+  "schema": "so100rob/train_gate/1",
+  "description": "Frozen pre-agreed training gate for the Phase 4 baseline (TRAIN-01, TRAIN-03). Pinned as committed data BEFORE any training step or measurement: this pin commit provably precedes every results artifact in git history (D-01 — the Phase 3 D-04 pre-agreement pattern, config/obs_gate.json cc1945b precedent). The runners (04-03 train.py, 04-04 evaluate_baseline.py + run_policy_audit.py, 04-05 judgment) READ this file by field name and never re-hardcode any pinned number (WR-02 discipline extended). Immutable once the first training step begins; a post-measurement edit invalidates every number this phase produces.",
+  "_doc": {
+    "provenance": "Every number below is pre-agreed decision data (04-CONTEXT.md D-01..D-06) or verified arithmetic over pinned constants — never a post-hoc choice. The consistency contract is tests/test_train_gate.py: any future gate change must re-derive from a decision, not convenience (T-04-04 tampering, T-04-05 repudiation, T-04-06 audit-bound mitigations).",
+    "D-01": "The TRAIN-03 pass bar is pre-agreed BEFORE training: success_threshold_fraction=0.70 of spawns_total=25 frozen spawns -> min_spawns_successful=18, episodes_per_spawn=3 (episodes_total=75, anticipating Phase 5 EVAL-01), per_spawn_majority=2 (a spawn counts successful on a majority of its 3 episodes). 18/25 = 0.72 >= 0.70.",
+    "D-02": "eval_modes=[deterministic, stochastic]; primary_bar=deterministic removes sampling noise so Phase 5 before/after comparisons measure perturbation effects, not eval noise; the stochastic success rate is reported alongside as a reference number.",
+    "D-03": "retry.max_retries=1 at retry_budget_steps=2 x training_budget_steps = 3M steps (~3.3 h measured throughput, inside the 12 h window), then retry.on_second_miss=stop-and-investigate (reward, hyperparameters, env). A second miss is a debugging conversation, not a third run.",
+    "D-04": "training_budget_steps=1500000 IS config/obs_gate.json phase4_budget_steps (read, never restated); train_window_hours=12 IS obs_gate window_hours (the 04-01 arm_train_tripwire reads the same pin). Fixed budget, not train-until-threshold; D-03's retry is the only escalation path.",
+    "D-05": "checkpoint_selection=final-step: the final step's checkpoint is the frozen baseline for Phases 5-7 — no best-on-eval selection. Periodic checkpoints, if any, are crash-recovery only.",
+    "D-06": "tuning: 3 learning_rate variants (lr_grid=[1e-4, 3e-4, 1e-3]) at steps_per_variant=100000, selection by the highest last-100-episode mean RAW episodic return (Monitor's episode record is raw below VecNormalize — 04-RESEARCH Pattern 3), tie_band_rel=0.01 (1% relative tie) -> tie_fallback_lr=3e-4 (the middle grid entry), seed=0 (the smoke run's SEED comparability). The pinned constants bind and are read-only data: gamma from fixed_overrides.gamma_source, n_steps=128 / batch_size=64 / n_envs=8 (the smoke divisibility: 8 x 128 = 1024 % 64 == 0), device=cpu (never MPS).",
+    "task1_action_space_decision": "04-02 Task 1 blocking decision, resolved by the user 2026-10-05: action_space_mode=rescale_minus_one_one — each training env is wrapped in gymnasium RescaleAction(rescale_min, rescale_max) = (-1, 1) around the raw asymmetric ctrlrange Box. Rationale: the symmetric [-1,1] space matches SB3's official PPO guidance (the initial Gaussian is centered at 0 with std 1) on a contact-rich task; the wrapper translates [-1,1] to the raw ctrlrange, so the scripted-policy/audit code paths using raw ctrl are unaffected. The mapping is pinned end-to-end by tests/test_train_gate.py (research A4 mitigation: action [-1] -> ctrl low, [+1] -> ctrl high, 0 -> per-dim midpoint, home ctrl inside [-1,1]).",
+    "pitfall_1_spawn_mode": "spawn_mode=continuous for TRAINING envs (04-RESEARCH Pitfall 1): the env constructor default is grid and a no-options grid reset spawns index 0 EVERY episode — training on grid-default silently trains on one fixed cube position and the 25-spawn threshold eval would fail catastrophically. Eval/audit envs use grid mode + set_options over the frozen 25-spawn grid.",
+    "audit_bounds_derivation": "audit_no_success_return_max=2.5: a no-place episode's return is bounded above by the 2.0 dense ceiling (FULL_FLAGS_NO_PLACE_MAX_FRACTION=0.2 x TERMINAL_PLACE_BONUS=10.0) minus the 2.0 time-penalty ceiling (TIME_PENALTY=0.01 x 200 max control steps, the pinned episode horizon EPISODE_SIM_SECONDS/(PHYSICS_TIMESTEP x DEFAULT_FRAME_SKIP)) = 0.0, so 2.5 leaves margin. audit_success_return_min=6.0: a successful episode's return is bounded below by the 10.0 terminal bonus minus the 2.0 dense ceiling minus the 2.0 time penalty = 6.0 (equality pinned). The 04-04 audit runner judges with <= for the no-success max and >= for the success min: a record at exactly 2.5 (is_success False) or 6.0 (True) is compliant; 2.6 (False) or 5.9 (True) is a reward-hacking violation (T-04-06).",
+    "pinned_at": "2026-10-05",
+    "pinned_by": "04-02-PLAN.md Task 2 (Phase 4, Baseline Training); Task 1 action-space decision resolved by the user via the blocking checkpoint"
+  },
+  "success_threshold_fraction": 0.70,
+  "spawns_total": 25,
+  "min_spawns_successful": 18,
+  "episodes_per_spawn": 3,
+  "per_spawn_majority": 2,
+  "episodes_total": 75,
+  "eval_modes": ["deterministic", "stochastic"],
+  "primary_bar": "deterministic",
+  "checkpoint_selection": "final-step",
+  "action_space_mode": "rescale_minus_one_one",
+  "rescale_min": -1.0,
+  "rescale_max": 1.0,
+  "training_budget_steps": 1500000,
+  "train_window_hours": 12,
+  "retry": {
+    "max_retries": 1,
+    "retry_budget_steps": 3000000,
+    "on_second_miss": "stop-and-investigate"
+  },
+  "fixed_overrides": {
+    "gamma_source": "so100rob.constants.REWARD_GAMMA",
+    "n_steps": 128,
+    "batch_size": 64,
+    "n_envs": 8,
+    "device": "cpu"
+  },
+  "spawn_mode": "continuous",
+  "tuning": {
+    "variants": 3,
+    "steps_per_variant": 100000,
+    "sweep": "learning_rate",
+    "lr_grid": [0.0001, 0.0003, 0.001],
+    "selection_rule": "highest last-100-episode mean raw episodic return; variants within a 1% relative tie band (tie_band_rel) fall back to the middle grid lr 3e-4 (tie_fallback_lr)",
+    "tie_band_rel": 0.01,
+    "tie_fallback_lr": 0.0003,
+    "seed": 0
+  },
+  "audit_no_success_return_max": 2.5,
+  "audit_success_return_min": 6.0
+}
