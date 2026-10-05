@@ -119,6 +119,29 @@ transposed shape — read from the space, never hand-counted), then
 `reloaded.predict(fixed_obs, deterministic=True)` must satisfy
 `a.tobytes() == b.tobytes()` (bitwise).
 
+Eval-mode flags for evaluation loops (WR-03, added by 04-01 Task 3;
+verified against the installed SB3 2.9.0 source — there is NO
+`set_deterministic`): when a LOADED chain is used for evaluation
+(metrics / episode collection, not training), put the loaded
+VecNormalize in eval mode BEFORE any evaluation step — set BOTH
+instance attributes:
+
+```python
+loaded_norm.training = False    # stops obs_rms updates
+loaded_norm.norm_reward = False  # stops reward normalization
+```
+
+`.training = False` alone does NOT stop reward normalization —
+`norm_reward` is a separate instance attribute, and with it still
+`True` the returned rewards are running-return-normalized, silently
+incomparable with any training-time or cross-evaluation reward
+numbers. `VecNormalize.load` is a pickle load + `set_venv`: it restores
+the SAVED flag state, not the caller's eval intent, which is why both
+flags are set explicitly at reload time. Action determinism never
+comes from a VecNormalize flag — it comes from
+`model.predict(obs, deterministic=True)`, exactly as the bitwise proof
+above uses.
+
 ## Context the gate is judged against (PRIOR-PHASE context — not the decision input)
 
 The decision input is the smoke run's measured steps/s above. The Phase 1
@@ -222,6 +245,12 @@ VecFrameStack(4) over the flat 28-dim Box, MLP policy) was NOT selected —
 the gate did not fire it. With measured 252.8 steps/s, the 1.5M-step Phase 4
 baseline budget takes ~1.6 h of wall clock — ~13% of the 12 h window
 (1.5e6 / 252.8 = 5931 s ≈ 1.65 h), leaving substantial rerun slack.
+
+Phase 4 training and the Phases 6-7 evaluation/fine-tuning loops reload
+these checkpoint bundles with the strict-order reload proof above, and
+every EVALUATION reload additionally applies the eval-mode flags
+(`loaded_norm.training = False` AND `loaded_norm.norm_reward = False` —
+both, always; see the reload-proof section, WR-03).
 
 ## Honest framing
 

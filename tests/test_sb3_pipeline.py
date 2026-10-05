@@ -365,19 +365,20 @@ def test_eval_mode_reload_recipe_documented():
     model.predict(obs, deterministic=True)).
     """
     doc = (REPO_ROOT / "OBS_DECISION.md").read_text()
-    assert "loaded_norm.training = False" in doc, (
+    doc_plain = doc.replace("`", "")  # markdown code spans are not part of the recipe text
+    assert "loaded_norm.training = False" in doc_plain, (
         "the reload recipe must name the SB3 2.9.0 training flag "
         "(vn.training = False) — WR-03"
     )
-    assert "loaded_norm.norm_reward = False" in doc, (
+    assert "loaded_norm.norm_reward = False" in doc_plain, (
         "the reload recipe must name the SB3 2.9.0 reward flag "
         "(vn.norm_reward = False) — WR-03"
     )
-    assert ".training = False alone does NOT stop reward normalization" in doc, (
+    assert ".training = False alone does NOT stop reward normalization" in doc_plain, (
         "the recipe must state explicitly that .training=False alone is "
         "insufficient (the classic silent-eval-bias pitfall) — WR-03"
     )
-    assert "deterministic=True" in doc, (
+    assert "deterministic=True" in doc_plain, (
         "the recipe must point determinism at predict(deterministic=True), "
         "since SB3 2.9.0 has no set_deterministic — WR-03"
     )
