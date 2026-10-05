@@ -57,16 +57,19 @@ SubprocVecEnv workers re-import this module, and without the guard each
 worker would recursively spawn workers (Pitfall 8).
 
 macOS GL-wedge hardening (diagnosed with C-stack evidence — see
-.planning/debug/subproc-topology-benchmark-hang.md and the SPAWN_*
-constants block): a spawn worker's FIRST render — lazy offscreen GL
-context creation plus the first mjr_readPixels, both inside env.reset()
-AFTER the readiness barrier — can wedge non-deterministically in Apple's
-OpenGL-on-Metal layer under 8-way concurrent first use; the parent then
-blocks in SB3's in-order remote.recv. The runner therefore watches EVERY
-untimed setup exchange (construction + readiness barrier + per-worker
-first-render warm-up + the benchmark's reset/warm-up) with bounded
-kill/rebuild/retry, never arms a timed region, and keeps a global
-faulthandler tripwire as the backstop of last resort.
+.planning/debug/subproc-topology-benchmark-hang.md): a spawn worker's
+FIRST render — lazy offscreen GL context creation plus the first
+mjr_readPixels, both inside env.reset() AFTER the readiness barrier —
+can wedge non-deterministically in Apple's OpenGL-on-Metal layer under
+8-way concurrent first use; the parent then blocks in SB3's in-order
+remote.recv. The hardened construction lives EXACTLY ONCE, in the
+package module so100rob._hardened_venv (D-07 — the STATE.md Phase 4
+contract, extracted by 04-01 Task 2): it watches EVERY untimed setup
+exchange (construction + readiness barrier + per-worker first-render
+warm-up + the benchmark's reset/warm-up) with bounded
+kill/rebuild/retry, never arms a timed region, and this runner arms its
+computed SETUP_TRIPWIRE_S as the backstop of last resort (the old
+25-min hardcode is gone — IN-09).
 """
 
 from __future__ import annotations
@@ -74,7 +77,6 @@ from __future__ import annotations
 import faulthandler
 import json
 import math
-import signal
 import statistics
 import sys
 import time
@@ -84,11 +86,23 @@ from pathlib import Path
 
 import numpy as np
 from stable_baselines3 import PPO
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecTransposeImage
+from stable_baselines3.common.vec_env import VecNormalize, VecTransposeImage
 
 from so100rob import constants as C
-from so100rob.envs.pick_place_env import SO100PickPlaceEnv
+from so100rob._hardened_venv import (  # D-07: the hardened construction, imported — never re-defined
+    BENCH_SETUP_ATTEMPTS,
+    BENCH_SETUP_TIMEOUT_S,
+    N_ENVS,
+    SEED,
+    SETUP_TRIPWIRE_S,
+    TOPO_REPEATS,
+    TOPO_WARMUP_STEPS,
+    _close_if_safe,
+    _ConstructionTimeout,
+    _kill_venv,
+    _make_topology_robust,
+    _watched_reset_warmup,
+)
 from so100rob.vec_wrappers import ImageOnlyFrameStack
 
 # Reuse the Phase 1 benchmark's machine/version helpers so the runner and
@@ -105,17 +119,21 @@ GATE_PATH = REPO_ROOT / "config" / "obs_gate.json"
 # runaway run fails the collector rather than silently expanding (T-03-04).
 # Pitfall 7 divisibility: batch_size 64 divides n_steps x n_envs = 128 x 8 =
 # 1024, and 16384 = 16 rollout buffers of 1024 steps.
+#
+# The construction constants (N_ENVS, SEED, TOPO_REPEATS,
+# TOPO_WARMUP_STEPS, the SPAWN_*/BENCH_*/CONSTRUCTION_* hardening budgets,
+# SETUP_TRIPWIRE_S, and the hardened construction functions themselves)
+# live in so100rob._hardened_venv (D-07) and are imported above — the
+# hardened construction exists EXACTLY ONCE (04-01 Task 2), so the Phase 4
+# training run (04-03) reuses the proven path instead of a copy. Only the
+# runner-specific smoke budgets stay here.
 # ---------------------------------------------------------------------------
 
 SMOKE_TOTAL_TIMESTEPS = 16384  # D-06: pipeline-integrity smoke, no slope bar
-N_ENVS = 8                     # D-07: the mid candidate from 8-12 envs
 N_STEPS = 128                  # PPO rollout length per env
 BATCH_SIZE = 64                # divides the 1024-step rollout buffer (Pitfall 7)
 N_EPOCHS = 2                   # PPO epochs per update
-TOPO_WARMUP_STEPS = 200        # untimed: worker spawn + renderer creation + GL warm-up
-TOPO_TIMED_STEPS = 1000        # timed vec steps per repeat (x N_ENVS env steps)
-TOPO_REPEATS = 3               # median of >= 3 (the benchmark.py protocol)
-SEED = 0                       # identical for both formats (comparability)
+TOPO_TIMED_STEPS = 1000        # timed vec steps per repeat (x N_ENVS env steps) — untimed/timed split stays at the benchmark layer
 FORMATS = ("rgb", "grayscale")  # D-05 candidates, measured identically
 
 # D-05 tie band: READ from the pin's machine-readable
@@ -125,50 +143,6 @@ FORMATS = ("rgb", "grayscale")  # D-05 candidates, measured identically
 # cross-checked against the numeric field in _evaluate_gate so a re-pin
 # that changes either side fails loudly instead of silently disagreeing
 # with the committed pin.
-
-# --- macOS GL-on-Metal first-render wedge hardening (03-04, G-03-2) -------
-# Root cause (diagnosed with per-worker faulthandler dumps + macOS
-# `sample` C-stacks — .planning/debug/subproc-topology-benchmark-hang.md):
-# each spawn worker lazily creates its offscreen GL context and performs
-# its first mjr_readPixels INSIDE env.reset() — i.e. AFTER the readiness
-# barrier — and on macOS those GL calls ride the deprecated
-# OpenGL-on-Metal layer; under 8-way concurrent first use Apple's stack
-# can block PERMANENTLY (observed stuck sites: glfwCreateWindow ->
-# CGLFlushDrawable -> GLDContextRec::beginRenderPass, and mjr_readPixels
-# -> MTLCompilerFSCache::openSync -> flock on the shared on-disk Metal
-# compiler cache). The parent then blocks forever in SB3's in-order
-# remote.recv. The failure is non-deterministic (the same code passed
-# fully on Sept 23) — it is BOUNDED here, not eliminated. The probe
-# numbers, re-interpreted honestly: the first reset/step batch hung 4/12
-# times WITHOUT a readiness delay and 0/12 WITH a 5 s delay + an
-# all-worker get_attr barrier round-trip — the barrier spaces worker
-# imports away from the first GL use, REDUCING (not eliminating) the
-# contention wedge; a post-barrier command into a connected socketpair
-# cannot be lost. Coverage contract (untimed setup ONLY; timed regions
-# are NEVER armed, so measurements are untouched):
-#   1. construction + worker-ready delay + get_attr readiness barrier +
-#      the vec env's real reset() (the per-worker FIRST-RENDER WARM-UP)
-#      all under one SIGALRM watchdog, bounded retry + full worker
-#      cleanup,
-#   2. the benchmark repeat's untimed reset + warm-up under the same
-#      watchdog (_watched_reset_warmup) — on timeout: kill, rebuild,
-#      retry the WHOLE repeat, bounded count, loud RuntimeError on
-#      exhaustion; a wedged venv is KILLED, never closed (close() joins
-#      workers with no timeout),
-#   3. a wedged worker is provably dead before its replacement renders
-#      (terminate -> bounded join -> SIGKILL in _kill_venv — the Metal
-#      compiler-cache flock is shared state),
-#   4. a global faulthandler tripwire as the backstop of last resort.
-SPAWN_WORKER_READY_DELAY_S = 5.0  # spaces worker imports away from the first GL use (reduces the contention wedge)
-CONSTRUCTION_TIMEOUT_S = 60.0     # a healthy construction + barrier + first-render warm-up is ~5-10 s
-CONSTRUCTION_ATTEMPTS = 3
-BENCH_SETUP_TIMEOUT_S = 60.0      # SIGALRM window for one benchmark repeat's untimed reset + warm-up (subproc only; healthy ~2-6 s = 10x margin; untimed setup, NEVER the timed region)
-BENCH_SETUP_ATTEMPTS = 3         # bounded kill/rebuild/retry-the-repeat count per benchmark repeat; exhaustion raises RuntimeError -> exit 1 per the EXIT-CODE CONTRACT, never a silent hang
-_KILL_JOIN_S = 5.0               # per-phase join bound in _kill_venv
-# Backstop of last resort: if an exchange still wedges through some
-# future watchdog coverage gap, dump all Python tracebacks and exit
-# nonzero — the EXIT-CODE CONTRACT forbids hanging silently.
-FAULTHANDLER_TRIPWIRE_S = 25 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -203,197 +177,20 @@ class _Collector:
 
 
 # ---------------------------------------------------------------------------
-# Construction helpers (D-07: the start method travels through
-# vec_env_kwargs, never as a make_vec_env kwarg — no such parameter exists)
+# The hardened construction helpers (_vision_env_kwargs, _make_topology,
+# _close_if_safe, _ConstructionTimeout, _on_construction_alarm, _kill_venv,
+# _make_topology_robust, _watched_reset_warmup) live in
+# so100rob._hardened_venv (D-07) and are imported at the top — the
+# hardened construction exists EXACTLY ONCE (04-01 Task 2). The two
+# functions below are the runner-specific layers: the timed benchmark
+# protocol (_bench_topology) and the PPO chains, all consuming the
+# imported hardened path.
 # ---------------------------------------------------------------------------
-
-
-def _vision_env_kwargs(grayscale: bool) -> dict:
-    """Vision-mode env kwargs per D-05 format; default frame_skip."""
-    return dict(
-        obs_mode=C.OBS_MODE_VISION,
-        render_mode="rgb_array",
-        width=C.OBS_IMAGE_SIZE,
-        height=C.OBS_IMAGE_SIZE,
-        grayscale=grayscale,
-    )
-
-
-def _make_topology(kind: str, grayscale: bool = False):
-    """8-env vision vec-env on the given topology ('dummy' | 'subproc')."""
-    if kind == "dummy":
-        return make_vec_env(
-            SO100PickPlaceEnv,
-            n_envs=N_ENVS,
-            seed=SEED,
-            env_kwargs=_vision_env_kwargs(grayscale),
-        )
-    if kind == "subproc":
-        return make_vec_env(
-            SO100PickPlaceEnv,
-            n_envs=N_ENVS,
-            seed=SEED,
-            env_kwargs=_vision_env_kwargs(grayscale),
-            vec_env_cls=SubprocVecEnv,
-            vec_env_kwargs={"start_method": "spawn"},  # Pitfall 8: via vec_env_kwargs
-        )
-    raise ValueError(f"unknown topology kind: {kind!r}")
-
-
-def _close_if_safe(venv, kind: str) -> None:
-    """Close subproc workers (their own processes; GL teardown is contained).
-
-    Dummy vision envs are NEVER closed mid-process: gymnasium 1.3.0's
-    OffScreenViewer.close() terminates the process-global GLFW state
-    (03-01 decision) — in-process renderers are left to GC, the pattern
-    the 03-02 suite established.
-    """
-    if kind == "subproc":
-        venv.close()
-
-
-class _ConstructionTimeout(Exception):
-    """A subproc untimed-setup exchange desynced (macOS GL-on-Metal
-    first-render wedge): construction/readiness, the per-worker first
-    render, or a benchmark reset/warm-up."""
-
-
-def _on_construction_alarm(signum, frame) -> None:
-    raise _ConstructionTimeout()
-
-
-def _kill_venv(venv) -> None:
-    """Terminate hung spawn workers and close their pipes so a retry
-    starts from a clean worker set.
-
-    A worker still alive after the bounded join gets SIGKILL: a wedged
-    worker can be stuck on the on-disk Metal compiler-cache flock
-    (shared state), so it must be provably dead before a retry's fresh
-    workers render, or the retry can wedge on the same lock. (SB3's
-    _worker installs no SIGTERM handler, so terminate normally
-    suffices; the escalation is the guarantee.)"""
-    for p in venv.processes:
-        p.terminate()
-    for p in venv.processes:
-        p.join(_KILL_JOIN_S)
-        if p.is_alive():
-            p.kill()  # SIGKILL escalation for a SIGTERM-immune wedge
-            p.join(_KILL_JOIN_S)
-    for r in venv.remotes:
-        try:
-            r.close()
-        except Exception:
-            pass
-
-
-def _make_topology_robust(kind: str, grayscale: bool = False):
-    """Construct a vec-env with every untimed setup exchange bounded.
-
-    DummyVecEnv is in-process (no pipes, no concurrent fresh GL contexts)
-    and constructed directly. A spawn SubprocVecEnv gets: construction +
-    worker-ready delay + an all-worker get_attr readiness barrier + a
-    per-worker FIRST-RENDER WARM-UP (the vec env's real reset(), which is
-    where each worker lazily creates its offscreen GL context and
-    performs its first mjr_readPixels — the non-deterministic macOS
-    GL-on-Metal first-render wedge window), all under a SIGALRM watchdog
-    with bounded retry and full worker cleanup — a wedged attempt is
-    killed and rebuilt instead of hanging the run. Because every
-    construction through this path ends with a completed first reset,
-    Phases B/C inherit the coverage: model.learn()'s internal reset and
-    every later render run on already-created GL contexts. Timed regions
-    are never armed.
-    """
-    if kind != "subproc":
-        return _make_topology(kind, grayscale)
-    signal.signal(signal.SIGALRM, _on_construction_alarm)
-    last: Exception | None = None
-    for attempt in range(1, CONSTRUCTION_ATTEMPTS + 1):
-        venv = None
-        signal.setitimer(signal.ITIMER_REAL, CONSTRUCTION_TIMEOUT_S)
-        try:
-            venv = _make_topology(kind, grayscale)
-            # Workers need ~2 s to finish importing __main__ and reach
-            # their command loop; a batch sent before that can desync.
-            time.sleep(SPAWN_WORKER_READY_DELAY_S)
-            # Readiness barrier: a harmless round-trip to ALL 8 workers.
-            # Only when this returns is every worker provably in its
-            # command loop.
-            venv.get_attr("spec")
-            # First-render warm-up (route 2): the FIRST reset is where
-            # each worker lazily creates its offscreen GL context and
-            # performs its first mjr_readPixels (vision obs -> render
-            # inside reset_model -> _get_obs) — on macOS those GL calls
-            # ride the OpenGL-on-Metal layer and can wedge
-            # non-deterministically under 8-way concurrent first use.
-            # Running it HERE keeps the wedge inside the watchdoged
-            # construction window, so a wedged worker is killed/rebuilt/
-            # retried below instead of hanging the run, and every LATER
-            # reset/render (including model.learn()'s internal reset in
-            # Phases B/C) runs on already-created GL contexts.
-            venv.reset()
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            if attempt > 1:
-                print(
-                    f"[smoke] subproc construction succeeded on attempt "
-                    f"{attempt}/{CONSTRUCTION_ATTEMPTS} "
-                    f"(macOS GL-on-Metal first-render wedge)",
-                    flush=True,
-                )
-            return venv
-        except _ConstructionTimeout as exc:
-            last = exc
-            print(
-                f"[smoke] subproc construction attempt "
-                f"{attempt}/{CONSTRUCTION_ATTEMPTS} desynced (> "
-                f"{CONSTRUCTION_TIMEOUT_S:.0f} s — macOS GL-on-Metal "
-                f"first-render wedge); killing workers and retrying",
-                flush=True,
-            )
-            if venv is not None:
-                _kill_venv(venv)
-        except BaseException:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            if venv is not None:
-                _kill_venv(venv)
-            raise
-    raise RuntimeError(
-        f"subproc vec-env construction desynced after "
-        f"{CONSTRUCTION_ATTEMPTS} attempts (macOS GL-on-Metal "
-        f"first-render wedge — see "
-        f".planning/debug/subproc-topology-benchmark-hang.md)"
-    ) from last
 
 
 # ---------------------------------------------------------------------------
 # Phase A — D-07 topology benchmark (benchmark.py protocol)
 # ---------------------------------------------------------------------------
-
-
-def _watched_reset_warmup(venv, kind: str, action) -> None:
-    """Untimed benchmark setup — reset + warm-up steps (route 1).
-
-    For non-subproc topologies this runs the reset and warm-up directly
-    (current behavior: the contention wedge needs concurrent fresh
-    processes, and kill/rebuild is meaningless in-process). For subproc it
-    runs under the SAME SIGALRM watchdog as construction: a worker whose
-    first or later GL exchange wedges in Apple's OpenGL-on-Metal layer
-    stalls this exchange, so _ConstructionTimeout (the same failure class
-    — an untimed-setup exchange desynced) propagates to the caller, which
-    kills and retries. The watchdog disarms in a finally — BEFORE the
-    caller's timed region, which is never armed."""
-    if kind != "subproc":
-        venv.reset()
-        for _ in range(TOPO_WARMUP_STEPS):  # untimed warm-up
-            venv.step(action)
-        return
-    signal.signal(signal.SIGALRM, _on_construction_alarm)
-    signal.setitimer(signal.ITIMER_REAL, BENCH_SETUP_TIMEOUT_S)
-    try:
-        venv.reset()
-        for _ in range(TOPO_WARMUP_STEPS):  # untimed warm-up
-            venv.step(action)
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 def _bench_topology(kind: str) -> tuple[float, list[float]]:
@@ -687,10 +484,12 @@ def _evaluate_gate(gate: dict, formats: dict, coll: _Collector) -> dict:
 
 
 def main() -> int:
-    # Global tripwire (see FAULTHANDLER_TRIPWIRE_S): if any exchange wedges
-    # mid-run, dump every thread's Python traceback and exit nonzero —
-    # the EXIT-CODE CONTRACT forbids a silent infinite hang.
-    faulthandler.dump_traceback_later(FAULTHANDLER_TRIPWIRE_S, exit=True)
+    # Global SETUP tripwire (SETUP_TRIPWIRE_S from so100rob._hardened_venv —
+    # the COMPUTED worst-case bound over every watchdogged untimed-setup
+    # window, IN-09): if an exchange still wedges through some future
+    # watchdog coverage gap, dump every thread's Python traceback and exit
+    # nonzero — the EXIT-CODE CONTRACT forbids a silent infinite hang.
+    faulthandler.dump_traceback_later(SETUP_TRIPWIRE_S, exit=True)
     gate = json.loads(GATE_PATH.read_text())
     coll = _Collector("sb3_smoke")
 

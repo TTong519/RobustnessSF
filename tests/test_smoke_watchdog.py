@@ -47,6 +47,20 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import run_sb3_smoke  # noqa: E402
 
+# Since 04-01 Task 2 the hardened construction lives in the package
+# module so100rob._hardened_venv (D-07), and the runner is a thin
+# consumer that imports (re-exports) it. monkeypatch targets and call
+# sites are therefore NAMESPACED BY WHO CONSUMES THEM:
+#   * names consumed INSIDE a _hardened_venv function (watchdog windows,
+#     warm-up steps, ready delay, kill bound, _make_topology,
+#     _ConstructionTimeout) are patched/called on the MODULE (hv.*) —
+#     patching the runner's re-export would never reach them;
+#   * names consumed by the RUNNER's own _bench_topology (repeat/timed
+#     counts, attempt counts, and the _make_topology_robust/_kill_venv/
+#     _close_if_safe seams it calls) are patched on run_sb3_smoke, the
+#     same as before the extraction.
+from so100rob import _hardened_venv as hv
+
 
 class _StubVenv:
     """Minimal SubprocVecEnv surface the hardening paths touch."""
@@ -80,12 +94,12 @@ def _itimer_disarmed() -> bool:
 
 def test_hung_reset_is_bounded(monkeypatch):
     """A hung reset fires the watchdog in ~BENCH_SETUP_TIMEOUT_S (not the hang), and the finally-disarm holds on the timeout path."""
-    monkeypatch.setattr(run_sb3_smoke, "BENCH_SETUP_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(hv, "BENCH_SETUP_TIMEOUT_S", 0.5)
     stub = _StubVenv(reset_delay_s=30.0)
     action = np.zeros((8, 6), dtype=np.float32)
     t0 = time.perf_counter()
-    with pytest.raises(run_sb3_smoke._ConstructionTimeout):
-        run_sb3_smoke._watched_reset_warmup(stub, "subproc", action)
+    with pytest.raises(hv._ConstructionTimeout):
+        hv._watched_reset_warmup(stub, "subproc", action)
     elapsed = time.perf_counter() - t0
     assert elapsed < 5.0, f"watchdog fired too late: {elapsed:.2f} s"
     # The finally-disarm holds on the TIMEOUT path, so the timed region
@@ -96,9 +110,9 @@ def test_hung_reset_is_bounded(monkeypatch):
 def test_timeout_kills_rebuilds_and_retries_the_repeat(monkeypatch, capsys):
     """A wedged repeat is killed and rebuilt; the retried repeat completes and is timed strictly positively; the healthy venv (only) is closed."""
     monkeypatch.setattr(run_sb3_smoke, "TOPO_REPEATS", 1)
-    monkeypatch.setattr(run_sb3_smoke, "TOPO_WARMUP_STEPS", 2)
+    monkeypatch.setattr(hv, "TOPO_WARMUP_STEPS", 2)
     monkeypatch.setattr(run_sb3_smoke, "TOPO_TIMED_STEPS", 3)
-    monkeypatch.setattr(run_sb3_smoke, "BENCH_SETUP_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(hv, "BENCH_SETUP_TIMEOUT_S", 0.5)
     hung = _StubVenv(reset_delay_s=30.0)
     healthy = _StubVenv(step_delay_s=0.001)  # timed region elapsed > 0
     stubs = [hung, healthy]
@@ -127,9 +141,9 @@ def test_timeout_kills_rebuilds_and_retries_the_repeat(monkeypatch, capsys):
 def test_exhausted_attempts_fail_loudly(monkeypatch):
     """Bounded attempts: every stub wedges -> both killed, RuntimeError matching the exhaustion message, no infinite hang (~2x timeout, not TOPO x hang)."""
     monkeypatch.setattr(run_sb3_smoke, "TOPO_REPEATS", 1)
-    monkeypatch.setattr(run_sb3_smoke, "TOPO_WARMUP_STEPS", 1)
+    monkeypatch.setattr(hv, "TOPO_WARMUP_STEPS", 1)
     monkeypatch.setattr(run_sb3_smoke, "TOPO_TIMED_STEPS", 2)
-    monkeypatch.setattr(run_sb3_smoke, "BENCH_SETUP_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(hv, "BENCH_SETUP_TIMEOUT_S", 0.5)
     monkeypatch.setattr(run_sb3_smoke, "BENCH_SETUP_ATTEMPTS", 2)
     hung_stubs = [_StubVenv(reset_delay_s=30.0), _StubVenv(reset_delay_s=30.0)]
     monkeypatch.setattr(
@@ -153,11 +167,11 @@ def test_first_render_warmup_inside_construction_watchdog(monkeypatch):
     """REAL _make_topology_robust('subproc'): venv.reset() (the per-worker first-render warm-up) happens AFTER the get_attr barrier, inside the watchdoged window, and the itimer is disarmed afterwards."""
     stub = _StubVenv()
     monkeypatch.setattr(
-        run_sb3_smoke, "_make_topology", lambda kind, grayscale=False: stub
+        hv, "_make_topology", lambda kind, grayscale=False, env_kwargs=None: stub
     )
-    monkeypatch.setattr(run_sb3_smoke, "SPAWN_WORKER_READY_DELAY_S", 0.0)
+    monkeypatch.setattr(hv, "SPAWN_WORKER_READY_DELAY_S", 0.0)
 
-    returned = run_sb3_smoke._make_topology_robust("subproc")
+    returned = hv._make_topology_robust("subproc")
 
     assert returned is stub
     assert stub.calls == ["get_attr", "reset"], (
@@ -179,14 +193,14 @@ def _sigterm_ignoring_child():
 
 def test_kill_venv_reaps_sigterm_ignoring_worker(monkeypatch):
     """_kill_venv escalation: a worker wedged on shared state ignores SIGTERM, so terminate -> bounded join -> SIGKILL must reap it within the bound."""
-    monkeypatch.setattr(run_sb3_smoke, "_KILL_JOIN_S", 0.25)
+    monkeypatch.setattr(hv, "_KILL_JOIN_S", 0.25)
     child = _mp.get_context("fork").Process(target=_sigterm_ignoring_child)
     child.start()
     stub = _StubVenv()
     stub.processes = [child]
 
     t0 = time.perf_counter()
-    run_sb3_smoke._kill_venv(stub)
+    hv._kill_venv(stub)
     elapsed = time.perf_counter() - t0
 
     assert not child.is_alive(), (
