@@ -340,8 +340,14 @@ def test_state_identical_across_modes():
         vision_obs, _ = vision.reset(seed=123)
         np.testing.assert_array_equal(state_obs, vision_obs[C.OBS_STATE_KEY])
     finally:
+        # Close ONLY the renderer-less state env. The vision env is NEVER
+        # closed mid-process while other renderers live (WR-04, the one
+        # suite-wide discipline): gymnasium 1.3.0's OffScreenViewer.close()
+        # calls glfw.terminate() — a process-global teardown that blackens
+        # every other live offscreen viewer. The GL context is freed by
+        # OffScreenViewer.__del__ at GC, the pattern test_obs_space.py's
+        # own check_env block and test_sb3_pipeline.py follow.
         state_env.close()
-        vision.close()
 
 
 def test_obs_nonfinite_fails_loudly():

@@ -44,8 +44,12 @@ def render_env():
     """
     env_ = SO100PickPlaceEnv(frame_skip=25, render_mode="rgb_array", width=64, height=64)
     env_.reset(seed=0)
+    # NEVER closed at teardown (WR-04, the one suite-wide discipline):
+    # this rgb_array env owns an in-process offscreen viewer, and
+    # gymnasium 1.3.0's OffScreenViewer.close() calls glfw.terminate() — a
+    # process-global teardown that blackens every other live offscreen
+    # viewer. The GL context is freed by OffScreenViewer.__del__ at GC.
     yield env_
-    env_.close()
 
 
 @pytest.fixture()
