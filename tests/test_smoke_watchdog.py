@@ -167,7 +167,7 @@ def test_first_render_warmup_inside_construction_watchdog(monkeypatch):
     """REAL _make_topology_robust('subproc'): venv.reset() (the per-worker first-render warm-up) happens AFTER the get_attr barrier, inside the watchdoged window, and the itimer is disarmed afterwards."""
     stub = _StubVenv()
     monkeypatch.setattr(
-        hv, "_make_topology", lambda kind, grayscale=False, env_kwargs=None: stub
+        hv, "_make_topology", lambda kind, grayscale=False, env_kwargs=None, wrapper_class=None, wrapper_kwargs=None: stub
     )
     monkeypatch.setattr(hv, "SPAWN_WORKER_READY_DELAY_S", 0.0)
 

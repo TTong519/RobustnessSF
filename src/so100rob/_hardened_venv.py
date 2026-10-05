@@ -195,14 +195,23 @@ def _vision_env_kwargs(grayscale: bool) -> dict:
 
 
 def _make_topology(
-    kind: str, grayscale: bool = False, env_kwargs: dict | None = None
+    kind: str,
+    grayscale: bool = False,
+    env_kwargs: dict | None = None,
+    wrapper_class=None,
+    wrapper_kwargs: dict | None = None,
 ):
     """8-env vision vec-env on the given topology ('dummy' | 'subproc').
 
     env_kwargs (None = unchanged smoke behavior) merges OVER the vision
     kwargs so 04-03's training construction can add per-worker options
     (spawn_mode="continuous" — Pitfall 1) through the SAME hardened path
-    instead of a second builder."""
+    instead of a second builder. wrapper_class/wrapper_kwargs (04-03,
+    additive like env_kwargs) pass through to make_vec_env's per-env
+    factory — gymnasium RescaleAction(gate rescale_min/max) per the
+    pinned action_space_mode rides INSIDE each worker env (below
+    VecNormalize, above the raw env), so the hardened construction
+    remains the only spawn-topology builder (D-07)."""
     kwargs = _vision_env_kwargs(grayscale)
     if env_kwargs:
         kwargs.update(env_kwargs)
@@ -212,6 +221,8 @@ def _make_topology(
             n_envs=N_ENVS,
             seed=SEED,
             env_kwargs=kwargs,
+            wrapper_class=wrapper_class,
+            wrapper_kwargs=wrapper_kwargs,
         )
     if kind == "subproc":
         return make_vec_env(
@@ -221,6 +232,8 @@ def _make_topology(
             env_kwargs=kwargs,
             vec_env_cls=SubprocVecEnv,
             vec_env_kwargs={"start_method": "spawn"},  # Pitfall 8: via vec_env_kwargs
+            wrapper_class=wrapper_class,
+            wrapper_kwargs=wrapper_kwargs,
         )
     raise ValueError(f"unknown topology kind: {kind!r}")
 
@@ -272,7 +285,11 @@ def _kill_venv(venv) -> None:
 
 
 def _make_topology_robust(
-    kind: str, grayscale: bool = False, env_kwargs: dict | None = None
+    kind: str,
+    grayscale: bool = False,
+    env_kwargs: dict | None = None,
+    wrapper_class=None,
+    wrapper_kwargs: dict | None = None,
 ):
     """Construct a vec-env with every untimed setup exchange bounded.
 
@@ -298,7 +315,7 @@ def _make_topology_robust(
         venv = None
         signal.setitimer(signal.ITIMER_REAL, CONSTRUCTION_TIMEOUT_S)
         try:
-            venv = _make_topology(kind, grayscale, env_kwargs)
+            venv = _make_topology(kind, grayscale, env_kwargs, wrapper_class, wrapper_kwargs)
             # Workers need ~2 s to finish importing __main__ and reach
             # their command loop; a batch sent before that can desync.
             time.sleep(SPAWN_WORKER_READY_DELAY_S)
