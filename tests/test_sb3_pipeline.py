@@ -33,6 +33,8 @@ close() terminates the process-wide GLFW state); they are left to GC.
 """
 
 import importlib.metadata
+import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -46,6 +48,8 @@ from torch.utils.tensorboard import SummaryWriter  # noqa: F401  (T-03-SC import
 from so100rob import constants as C
 from so100rob.envs.pick_place_env import SO100PickPlaceEnv
 from so100rob.vec_wrappers import ImageOnlyFrameStack
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # A strongly-moving arm action (position actuators head from the home
 # keyframe toward these ctrl targets): guaranteed to change the rendered
@@ -314,3 +318,85 @@ def test_train_save_reload_bitwise_and_stats_roundtrip(tmp_path):
     assert np.array_equal(loaded_norm.ret_rms.mean, ret_mean)
     assert np.array_equal(loaded_norm.ret_rms.var, ret_var)
     assert C.OBS_IMAGE_KEY not in loaded_norm.obs_rms
+
+
+# ---------------------------------------------------------------------------
+# 04-01 Task 3: WR-02 pin-consistency (tie band) + WR-03 eval-mode reload
+# recipe (both pinned against OBS_DECISION.md / the committed gate pin)
+# ---------------------------------------------------------------------------
+
+
+def test_gate_tie_band_is_pinned_data_read_by_the_runner():
+    """WR-02 regression pin (04-01 Task 3): the D-05 tie band lives ONLY as
+    committed data — config/obs_gate.json's format_rule_tie_band_rel field —
+    and scripts/run_sb3_smoke.py reads it BY NAME at gate evaluation; no
+    module-level TIE_BAND_REL literal survives in the runner (runners read
+    pins, never re-hardcode — D-04).
+
+    Deviation note (04-01 SUMMARY): the plan proposed adding a field named
+    ``tie_band_rel``; the pin already carries the SAME 10% band under
+    ``format_rule_tie_band_rel`` (fix(03) d0f29d1, applied 2026-10-03,
+    BEFORE this plan was authored). Adding a second field would duplicate
+    decision data — the exact silent-divergence hazard WR-02 warns
+    against — so this test pins the EXISTING field.
+    """
+    gate = json.loads((REPO_ROOT / "config" / "obs_gate.json").read_text())
+    assert gate["format_rule_tie_band_rel"] == pytest.approx(0.10)
+    assert 0.0 < gate["format_rule_tie_band_rel"] < 1.0
+    # Prose cross-check (the same discipline _evaluate_gate applies): the
+    # pin's format_rule prose must quote the same band as the numeric field.
+    assert f"{gate['format_rule_tie_band_rel'] * 100:.0f}% band" in gate["format_rule"]
+
+    runner_src = (REPO_ROOT / "scripts" / "run_sb3_smoke.py").read_text()
+    assert 'gate["format_rule_tie_band_rel"]' in runner_src, (
+        "the runner must read the tie band from the pin by field name (WR-02)"
+    )
+    assert "TIE_BAND_REL" not in runner_src, (
+        "a re-hardcoded TIE_BAND_REL literal survives in the runner (WR-02)"
+    )
+
+
+def test_eval_mode_reload_recipe_documented():
+    """WR-03 (04-01 Task 3): OBS_DECISION.md's reload proof documents the
+    COMPLETE SB3 eval-mode recipe for a LOADED VecNormalize — both instance
+    flags, the exact SB3 2.9.0 attribute names — before any evaluation, and
+    the flag names are verified LIVE against the installed VecNormalize
+    (SB3 2.9.0 has NO set_deterministic; action determinism comes from
+    model.predict(obs, deterministic=True)).
+    """
+    doc = (REPO_ROOT / "OBS_DECISION.md").read_text()
+    assert "loaded_norm.training = False" in doc, (
+        "the reload recipe must name the SB3 2.9.0 training flag "
+        "(vn.training = False) — WR-03"
+    )
+    assert "loaded_norm.norm_reward = False" in doc, (
+        "the reload recipe must name the SB3 2.9.0 reward flag "
+        "(vn.norm_reward = False) — WR-03"
+    )
+    assert ".training = False alone does NOT stop reward normalization" in doc, (
+        "the recipe must state explicitly that .training=False alone is "
+        "insufficient (the classic silent-eval-bias pitfall) — WR-03"
+    )
+    assert "deterministic=True" in doc, (
+        "the recipe must point determinism at predict(deterministic=True), "
+        "since SB3 2.9.0 has no set_deterministic — WR-03"
+    )
+
+    # LIVE verification of the flag names against the installed SB3 2.9.0
+    # (the pinned toolchain test above guards the version): both flags are
+    # real instance attributes, both are settable as the recipe documents,
+    # and set_deterministic does NOT exist.
+    venv = make_vec_env(SO100PickPlaceEnv, n_envs=1, seed=0)
+    norm = VecNormalize(venv)
+    try:
+        assert hasattr(norm, "training"), "VecNormalize.training missing (recipe unexecutable)"
+        assert hasattr(norm, "norm_reward"), "VecNormalize.norm_reward missing (recipe unexecutable)"
+        assert not hasattr(norm, "set_deterministic"), (
+            "SB3 2.9.0 grew a set_deterministic — update the recipe"
+        )
+        # The documented recipe is executable exactly as written.
+        norm.training = False
+        norm.norm_reward = False
+        assert norm.training is False and norm.norm_reward is False
+    finally:
+        norm.close()
