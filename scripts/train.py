@@ -79,7 +79,7 @@ from pathlib import Path
 import numpy as np
 from gymnasium.wrappers import RescaleAction
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize, VecTransposeImage
 
 from so100rob import constants as C
@@ -95,6 +95,7 @@ from so100rob.vec_wrappers import ImageOnlyFrameStack
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GATE_PATH = REPO_ROOT / "config" / "train_gate.json"
 RUNS_ROOT = REPO_ROOT / "runs" / "train"
+TUNE_ROOT = RUNS_ROOT / "tune"  # the tuning pass: <variant>/ bundles + selection.json
 TB_ROOT = REPO_ROOT / "tb"
 GATE_SCHEMA = "so100rob/train_gate/1"
 CONFIG_SCHEMA = "so100rob/train_run_config/1"
@@ -109,6 +110,7 @@ GRAYSCALE = True  # OBS_DECISION D-05: vision-64x64-gray (the Phase 3 format dec
 N_EPOCHS = 2  # the smoke/D-06 epoch count (a speed choice, not a tuned one)
 STDOUT_EPISODE_INTERVAL = 20  # progress print cadence (operational, not a gate pin)
 LAST_N_EPISODES = 100  # the gate's selection_rule "last-100-episode mean raw return" window
+CHECKPOINT_INTERVAL_STEPS = 250_000  # D-05: periodic-checkpoint cadence — CRASH RECOVERY ONLY, never a selection candidate
 VERSION_PACKAGES = (  # provenance block in every bundle config (operational)
     "mujoco",
     "gymnasium",
@@ -397,6 +399,150 @@ def reload_proof(trained_model, run_dir: Path, gate: dict, cfg: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tuning selection rule (D-06: a pure, unit-tested function)
+# ---------------------------------------------------------------------------
+
+
+def apply_selection_rule(gate: dict, episode_returns: dict) -> tuple[str, dict]:
+    """The pinned tuning selection rule (gate tuning.selection_rule), as a
+    pure function over per-variant episode logs: the metric is each
+    variant's mean RAW episodic return over its LAST LAST_N_EPISODES
+    completed episodes; the highest metric wins; a relative tie within
+    tie_band_rel between the best two falls back to tie_fallback_lr (the
+    pinned middle grid entry). Returns (chosen_lr_key, record) with the
+    record JSON-serializable (it IS runs/train/tune/selection.json).
+
+    Fail-loud pin cross-checks (the WR-02 prose pattern): the rule text
+    and the numeric tie band must agree with what this function applies.
+    """
+    tuning = gate["tuning"]
+    rule_prose = str(tuning["selection_rule"])
+    tie_band_rel = float(tuning["tie_band_rel"])
+    fallback = str(float(tuning["tie_fallback_lr"]))
+    if f"last-{LAST_N_EPISODES}-episode" not in rule_prose:
+        raise ValueError(
+            f"gate tuning.selection_rule no longer names the "
+            f"last-{LAST_N_EPISODES}-episode window this runner applies — "
+            "re-pin or update the runner (WR-02 prose cross-check)"
+        )
+    if f"{tie_band_rel * 100:.0f}%" not in rule_prose:
+        raise ValueError(
+            f"gate tuning.tie_band_rel={tie_band_rel} disagrees with the "
+            f"selection_rule prose (WR-02 prose cross-check)"
+        )
+    if not episode_returns:
+        raise ValueError("selection rule needs at least one variant's episode log")
+
+    metrics = {
+        str(lr): float(np.mean(list(returns)[-LAST_N_EPISODES:]))
+        for lr, returns in episode_returns.items()
+    }
+    if fallback not in metrics:
+        raise ValueError(
+            f"tie_fallback_lr {fallback!r} is not among the measured "
+            f"variants {sorted(metrics)} — the fallback must be a grid entry"
+        )
+    ranked = sorted(metrics.items(), key=lambda kv: kv[1], reverse=True)
+    best_lr, best_v = ranked[0]
+    chosen = best_lr
+    applied = (
+        f"highest last-{LAST_N_EPISODES}-episode mean raw return: {best_lr} "
+        f"({best_v:.4f})"
+    )
+    if len(ranked) >= 2:
+        second_lr, second_v = ranked[1]
+        if best_v == 0.0:
+            # A zero best metric has no relative scale: only an exactly
+            # equal second is a tie (0.0 vs -1.0 is a clear win, not a tie).
+            rel = 0.0 if second_v == 0.0 else float("inf")
+        else:
+            rel = abs(best_v - second_v) / abs(best_v)
+        if rel <= tie_band_rel:
+            chosen = fallback
+            applied = (
+                f"relative tie within the {tie_band_rel * 100:.0f}% band "
+                f"between the best two ({best_lr} {best_v:.4f} vs {second_lr} "
+                f"{second_v:.4f}, relative difference {rel * 100:.2f}%) -> "
+                f"tie_fallback_lr {fallback}"
+            )
+    record = {
+        "metrics": metrics,
+        "chosen_lr": chosen,
+        "rule": rule_prose,
+        "tie_band_rel": tie_band_rel,
+        "tie_fallback_lr": fallback,
+        "last_n_episodes": LAST_N_EPISODES,
+        "applied": applied,
+    }
+    return chosen, record
+
+
+# ---------------------------------------------------------------------------
+# Retry escalation (D-03: one retry at 2x budget, then stop-and-investigate)
+# ---------------------------------------------------------------------------
+
+
+def check_retry_allowed(gate: dict, confirmed: bool = False) -> bool:
+    """D-03 gate: retry mode refuses to run unless (1) the invocation is an
+    explicitly confirmed D-03 response (the runner never loops or
+    self-escalates), (2) the gate's retry.max_retries allows it, and (3)
+    the retry budget is exactly 2x the training budget — every number read
+    from the gate, never a literal."""
+    if not confirmed:
+        raise ValueError(
+            "retry mode requires --confirm-retry: D-03 allows exactly ONE "
+            "retry at 2x budget as a deliberate escalation response — the "
+            "runner never loops or self-escalates"
+        )
+    max_retries = int(gate["retry"]["max_retries"])
+    if max_retries < 1:
+        raise ValueError(
+            f"gate retry.max_retries={max_retries} forbids a retry "
+            f"(D-03 on_second_miss={gate['retry']['on_second_miss']!r}: "
+            "stop-and-investigate)"
+        )
+    budget = int(gate["training_budget_steps"])
+    retry_budget = int(gate["retry"]["retry_budget_steps"])
+    if retry_budget != 2 * budget:
+        raise ValueError(
+            f"gate retry.retry_budget_steps={retry_budget} != 2 x "
+            f"training_budget_steps={2 * budget} — the D-03 retry is 2x "
+            "the original budget (fail-loud on a tampered pin)"
+        )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Callback assembly (D-05: periodic checkpoints are crash-recovery only)
+# ---------------------------------------------------------------------------
+
+
+def build_callbacks(cfg: dict, run_dir: Path, progress: TrainProgressCallback) -> list:
+    """Progress callback always; a periodic CheckpointCallback for the full
+    run/retry modes ONLY, writing under <run_dir>/checkpoints/ with the
+    matching VecNormalize snapshot (save_vecnormalize=True — a checkpoint
+    without its stats is unusable, Pitfall 7). D-05: the final step's
+    bundle is the sole selection candidate; NOTHING reads the checkpoints
+    dir — it exists purely so a crashed run can restart, not resume."""
+    callbacks: list = [progress]
+    if cfg["mode"] in ("run", "retry"):
+        if CHECKPOINT_INTERVAL_STEPS % cfg["n_envs"] != 0:
+            raise ValueError(
+                f"checkpoint interval {CHECKPOINT_INTERVAL_STEPS} is not "
+                f"divisible by n_envs={cfg['n_envs']}"
+            )
+        callbacks.append(
+            CheckpointCallback(
+                save_freq=CHECKPOINT_INTERVAL_STEPS // cfg["n_envs"],
+                save_path=str(run_dir / "checkpoints"),
+                name_prefix="ppo",
+                save_vecnormalize=True,
+            )
+        )
+    return callbacks
+
+
+# ---------------------------------------------------------------------------
 # Progress callback (Pitfall 8: no tqdm/rich, no progress_bar=True)
 # ---------------------------------------------------------------------------
 
@@ -519,7 +665,7 @@ def run_train(gate: dict, cfg: dict, run_dir: Path) -> dict:
         flush=True,
     )
     t0 = time.perf_counter()
-    model.learn(total_timesteps=cfg["steps"], callback=[progress])
+    model.learn(total_timesteps=cfg["steps"], callback=build_callbacks(cfg, run_dir, progress))
     elapsed = time.perf_counter() - t0
     faulthandler.cancel_dump_traceback_later()
 
@@ -538,6 +684,81 @@ def run_train(gate: dict, cfg: dict, run_dir: Path) -> dict:
         "episodes": progress.episodes,
         "reload_ok": reload_ok,
     }
+
+
+# ---------------------------------------------------------------------------
+# Tuning pass (04-03 Task 2, D-06) — sweep from the gate, selection from logs
+# ---------------------------------------------------------------------------
+
+
+def _chosen_lr_from_selection() -> float | None:
+    """The lr chosen by the last tuning pass, read from
+    runs/train/tune/selection.json. This is the resume path: the full run
+    consumes the tuning decision without re-running the sweep. Returns
+    None when no pass has run (the caller then uses the gate default)."""
+    path = TUNE_ROOT / "selection.json"
+    if not path.exists():
+        return None
+    return float(json.loads(path.read_text())["chosen_lr"])
+
+
+def run_tune(gate: dict) -> dict:
+    """The gate's LR tuning pass: run EVERY tuning.lr_grid entry once at
+    tuning.steps_per_variant steps (no --lr/--steps override — the sweep
+    comes from the gate), write each variant's four-artifact bundle plus
+    its full episode log, then apply the pure selection rule (D-06) over
+    the per-variant episode returns and record the decision in
+    runs/train/tune/selection.json. D-05: the tune pass exists to pick
+    ONE lr — the final bundle of the full run stays the sole selection
+    candidate; a variant that fails its reload proof aborts the pass (no
+    selection from an unproven bundle)."""
+    tuning = gate["tuning"]
+    episode_returns: dict[str, list[float]] = {}
+    variants: dict[str, dict] = {}
+    for lr in tuning["lr_grid"]:
+        variant = f"lr-{lr}"
+        run_dir = TUNE_ROOT / variant
+        cfg = resolve_config(
+            gate, mode="tune", steps=None, lr=float(lr), run_name=f"tune-{variant}"
+        )
+        print(
+            f"[tune] variant {variant}: {cfg['steps']} steps at "
+            f"lr={cfg['learning_rate']} -> {run_dir}",
+            flush=True,
+        )
+        result = run_train(gate, cfg, run_dir)
+        if not result["reload_ok"]:
+            raise RuntimeError(
+                f"tune variant {variant} failed its reload proof — the "
+                "tuning pass aborts (selection never reads an unproven "
+                "bundle)"
+            )
+        with (run_dir / "episodes.jsonl").open("w") as fh:
+            for ep in result["episodes"]:
+                fh.write(json.dumps(ep) + "\n")
+        key = str(float(lr))
+        episode_returns[key] = [e["r"] for e in result["episodes"]]
+        variants[key] = {
+            "run_dir": str(run_dir),
+            "n_episodes": result["n_episodes"],
+            "steps_per_sec": result["steps_per_sec"],
+            "last_window_mean_raw_return": result["last_window_mean_raw_return"],
+        }
+        print(
+            f"[tune] variant {variant}: {result['n_episodes']} episodes, "
+            f"last-{LAST_N_EPISODES} mean raw return "
+            f"{result['last_window_mean_raw_return']:.3f} "
+            f"({result['steps_per_sec']:.1f} steps/s)",
+            flush=True,
+        )
+    chosen, record = apply_selection_rule(gate, episode_returns)
+    record["seed"] = int(tuning["seed"])
+    record["steps_per_variant"] = int(tuning["steps_per_variant"])
+    record["variants"] = variants
+    TUNE_ROOT.mkdir(parents=True, exist_ok=True)
+    selection_path = TUNE_ROOT / "selection.json"
+    selection_path.write_text(json.dumps(record, indent=2) + "\n")
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +794,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--lr", type=float, default=None, help="override the learning rate")
     p.add_argument(
+        "--confirm-retry",
+        action="store_true",
+        help=(
+            "the explicit D-03 confirmation for retry mode — without it "
+            "retry mode refuses to run (the runner never loops)"
+        ),
+    )
+    p.add_argument(
         "--out",
         type=str,
         default=None,
@@ -589,16 +818,58 @@ def main() -> int:
     args = _parse_args()
     try:
         gate = load_gate()
+
+        if args.mode == "tune":
+            # The sweep is gate data (lr_grid x steps_per_variant), not a
+            # CLI choice — an --lr/--steps override would de-pin the
+            # tuning pass (WR-02).
+            if args.lr is not None or args.steps is not None:
+                raise ValueError(
+                    "tune mode takes no --lr/--steps override: the sweep "
+                    "comes from the gate (config/train_gate.json "
+                    "tuning.lr_grid / tuning.steps_per_variant)"
+                )
+            record = run_tune(gate)
+            print(f"[tune] selection: {record['applied']}", flush=True)
+            print(
+                f"[tune] chosen lr {record['chosen_lr']} from metrics "
+                f"{ {k: round(v, 3) for k, v in record['metrics'].items()} }",
+                flush=True,
+            )
+            print(f"SELECTION_JSON={TUNE_ROOT / 'selection.json'}", flush=True)
+            return 0
+
+        if args.mode == "retry":
+            # D-03 gate FIRST, before any heavy construction: retry mode
+            # refuses without the explicit confirmation and the gate's
+            # consent (the runner never loops or self-escalates).
+            check_retry_allowed(gate, confirmed=args.confirm_retry)
+
         if args.out:
             out_dir = Path(args.out)
         else:
             out_dir = RUNS_ROOT / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+        # LR resolution order: explicit --lr, else the tuning pass's chosen
+        # lr (the resume path: `run` consumes selection.json), else the
+        # gate's pinned default. Provenance is printed either way.
+        lr = args.lr
+        if lr is not None:
+            lr_source = "--lr"
+        else:
+            lr = _chosen_lr_from_selection()
+            lr_source = (
+                "runs/train/tune/selection.json (tuning-pass choice)"
+                if lr is not None
+                else "gate tuning.tie_fallback_lr (no tuning pass found)"
+            )
+
         cfg = resolve_config(
-            gate, mode=args.mode, steps=args.steps, lr=args.lr, run_name=out_dir.name
+            gate, mode=args.mode, steps=args.steps, lr=lr, run_name=out_dir.name
         )
         print(
             f"[train:{cfg['run_name']}] mode={cfg['mode']} steps={cfg['steps']} "
-            f"lr={cfg['learning_rate']} seed={cfg['seed']} "
+            f"lr={cfg['learning_rate']} (from {lr_source}) seed={cfg['seed']} "
             f"gamma={cfg['gamma']} n_envs={cfg['n_envs']} "
             f"n_steps={cfg['n_steps']} batch_size={cfg['batch_size']} "
             f"device={cfg['device']}",
