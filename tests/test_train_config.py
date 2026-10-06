@@ -198,3 +198,121 @@ def test_rescale_wrapper_wraps_env_below_normalize():
     gate_bad["action_space_mode"] = "banana"
     with pytest.raises(ValueError, match="action_space_mode"):
         train.resolve_action_wrapper(gate_bad)
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — selection rule (pure function on synthetic episode logs, D-06)
+# ---------------------------------------------------------------------------
+
+
+def test_selection_rule_on_synthetic_episode_logs():
+    """Highest last-100-episode mean RAW episodic return wins; a <=1%
+    relative tie between the best two falls back to the pinned middle lr;
+    the function returns the chosen lr plus a JSON-serializable record of
+    every variant's metric."""
+    train = load_train()
+    gate = train.load_gate()
+    fallback = str(gate["tuning"]["tie_fallback_lr"])
+    assert fallback == "0.0003"  # the pinned middle grid entry
+
+    # Clear winner: 1e-3 (mean 0.0 beats -1.0 and -2.0).
+    logs = {"0.0001": [-2.0] * 100, "0.0003": [-1.0] * 100, "0.001": [-1.0] * 50 + [1.0] * 50}
+    chosen, rec = train.apply_selection_rule(gate, logs)
+    assert chosen == "0.001"
+    assert rec["chosen_lr"] == "0.001"
+    assert rec["metrics"]["0.001"] == pytest.approx(0.0)
+    json.dumps(rec)  # the record is JSON-serializable (selection.json)
+
+    # Only the LAST 100 episodes count: a variant with great early
+    # returns followed by a poor last-100 must NOT win.
+    logs_stale = {"0.0001": [-2.0] * 100, "0.0003": [5.0] * 100 + [-2.0] * 100, "0.001": [-1.5] * 100}
+    chosen2, rec2 = train.apply_selection_rule(gate, logs_stale)
+    assert rec2["metrics"]["0.0003"] == pytest.approx(-2.0)
+    assert chosen2 == "0.001" and chosen2 != "0.0003"
+
+    # A <=1% relative tie between the best two -> tie_fallback_lr (3e-4).
+    logs_tie = {"0.0001": [-2.0] * 100, "0.0003": [1.0] * 100, "0.001": [1.01] * 100}
+    chosen3, rec3 = train.apply_selection_rule(gate, logs_tie)
+    assert chosen3 == fallback
+    assert set(rec3["metrics"]) == {"0.0001", "0.0003", "0.001"}
+
+    # Just outside the band -> the highest metric wins.
+    logs_no = {"0.0001": [-2.0] * 100, "0.0003": [1.0] * 100, "0.001": [1.02] * 100}
+    chosen4, _ = train.apply_selection_rule(gate, logs_no)
+    assert chosen4 == "0.001"
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — retry mode: refusal + budget from the gate (D-03)
+# ---------------------------------------------------------------------------
+
+
+def test_retry_mode_refusal_and_budget_from_gate():
+    """Retry uses 2x the budget (3M) asserted FROM THE GATE, never a
+    literal, and refuses unless the gate's retry.max_retries allows it
+    AND the run is an explicitly confirmed D-03 response — the runner
+    does NOT loop."""
+    train = load_train()
+    gate = train.load_gate()
+
+    cfg = train.resolve_config(gate, mode="retry", steps=None, lr=None)
+    assert cfg["steps"] == gate["retry"]["retry_budget_steps"]
+    assert cfg["steps"] == 2 * gate["training_budget_steps"] == 3000000
+
+    # Refusal without the explicit D-03 confirmation.
+    with pytest.raises(ValueError, match="confirm"):
+        train.check_retry_allowed(gate, confirmed=False)
+    # Refusal when the gate forbids retries.
+    gate_no = json.loads(json.dumps(gate))
+    gate_no["retry"]["max_retries"] = 0
+    with pytest.raises(ValueError, match="max_retries"):
+        train.check_retry_allowed(gate_no, confirmed=True)
+    # A tampered/inconsistent retry budget fails loudly (never trains).
+    gate_bad = json.loads(json.dumps(gate))
+    gate_bad["retry"]["retry_budget_steps"] = 1234567
+    with pytest.raises(ValueError, match="2 x"):
+        train.check_retry_allowed(gate_bad, confirmed=True)
+    # Allowed with confirmation + gate consent.
+    assert train.check_retry_allowed(gate, confirmed=True) is True
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — checkpoint-selection discipline (D-05)
+# ---------------------------------------------------------------------------
+
+
+def test_run_mode_checkpoint_discipline():
+    """The resolved config records checkpoint_selection="final-step"; run
+    mode adds a periodic CheckpointCallback(save_vecnormalize=True) whose
+    save path is under runs/train/<ts>/checkpoints/ — crash recovery
+    ONLY, no code path reads it for selection."""
+    train = load_train()
+    gate = train.load_gate()
+
+    cfg = train.resolve_config(gate, mode="run", steps=None, lr=None)
+    assert cfg["checkpoint_selection"] == gate["checkpoint_selection"] == "final-step"
+
+    run_dir = Path("runs/train/20000101T000000Z")
+    progress = train.TrainProgressCallback("discipline-check")
+    callbacks = train.build_callbacks(cfg, run_dir, progress)
+    ckpts = [c for c in callbacks if type(c).__name__ == "CheckpointCallback"]
+    assert len(ckpts) == 1
+    ckpt = ckpts[0]
+    assert ckpt.save_path == str(run_dir / "checkpoints")
+    assert ckpt.save_vecnormalize is True
+
+    # Tune variants do not write periodic checkpoints (selection reads the
+    # episode logs' final windows, never a checkpoint).
+    cfg_tune = train.resolve_config(gate, mode="tune", steps=None, lr=None)
+    assert not [
+        c for c in train.build_callbacks(cfg_tune, run_dir, progress)
+        if type(c).__name__ == "CheckpointCallback"
+    ]
+
+    # No code path reads the checkpoints dir for selection (D-05): the
+    # string appears exactly once in the runner — the callback's save_path.
+    src = TRAIN_PATH.read_text()
+    assert src.count('"checkpoints"') == 1, (
+        "the checkpoints dir must be write-only (crash recovery); a second "
+        "reference would be a selection code path (D-05 violation)"
+    )
