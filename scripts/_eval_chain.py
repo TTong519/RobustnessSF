@@ -180,7 +180,12 @@ def build_eval_venv(gate: dict, n_envs: int = 1):
 def load_bundle(bundle_dir, gate: dict | None = None, n_envs: int = 1):
     """Reload a training bundle in eval mode (the WR-03 recipe) over ONE
     in-process env. STRICT ORDER (D-09): fresh venv -> VecNormalize.load ->
-    ImageOnlyFrameStack -> VecTransposeImage -> PPO.load().set_env.
+    ImageOnlyFrameStack -> VecTransposeImage -> PPO.load(env=chain) — the
+    model is attached AT load, never via a bare load + ``.set_env(chain)``
+    (SB3 2.9.0's ``set_env`` asserts ``num_envs == n_envs``, and the real
+    04-03 bundle was trained on n_envs=8 while the eval chain is ONE env
+    (D-07 scoping) — ``PPO.load(env=...)`` adopts the chain's spaces and
+    n_envs instead; found as a Rule 1 bug in 04-05 Task 1).
 
     The WR-03 flags are pinned AT LOAD — the returned chain's normalizer
     has training=False AND norm_reward=False before any predict call.
@@ -201,8 +206,7 @@ def load_bundle(bundle_dir, gate: dict | None = None, n_envs: int = 1):
     loaded_norm.training = False
     loaded_norm.norm_reward = False
     chain = VecTransposeImage(ImageOnlyFrameStack(loaded_norm, n_stack=C.OBS_N_STACK))
-    model = PPO.load(str(bundle_dir / "ppo_final"), device="cpu")
-    model.set_env(chain)
+    model = PPO.load(str(bundle_dir / "ppo_final"), env=chain, device="cpu")
     return model, chain
 
 

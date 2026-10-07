@@ -90,6 +90,7 @@ def _loaded():
     if "loaded" not in _STATE:
         ec = load_eval_chain()
         bundle = Path(tempfile.mkdtemp(prefix="so100rob-synthetic-bundle-"))
+        _STATE["bundle_path"] = bundle
         _STATE["bundle_chain"] = ec.make_synthetic_bundle(bundle)
         for artifact in BUNDLE_ARTIFACTS:
             assert (bundle / artifact).exists(), (
@@ -287,3 +288,51 @@ def test_predict_determinism_is_per_call(monkeypatch):
         f"the stochastic episode must call predict with "
         f"deterministic=False on every step; captured {second[:5]}..."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — the model is attached at load, never via .set_env (04-05 Rule 1)
+# ---------------------------------------------------------------------------
+
+
+def test_load_bundle_attaches_chain_via_load_env_kwarg(monkeypatch):
+    """``load_bundle`` must hand the built chain to ``PPO.load(env=...)`` —
+    never the bare ``PPO.load()`` + ``model.set_env(chain)`` sequence.
+
+    SB3 2.9.0's ``set_env`` asserts ``env.num_envs == model.n_envs``; the
+    real 04-03 bundle was trained on n_envs=8 while the eval chain is ONE
+    in-process env (D-07 scoping), so a set_env attach crashes with
+    ``AssertionError: (1 != 8)``. ``PPO.load(path, env=...)`` instead adopts
+    the chain's observation/action spaces and n_envs (the SB3-documented
+    path for a different env count). Found as a Rule 1 bug in 04-05 Task 1
+    when the first real-bundle evaluation crashed; pinned here so the
+    synthetic 1-env bundle can never mask it again.
+
+    GL discipline: no second offscreen viewer — ``build_eval_venv`` is
+    monkeypatched to return the cached chain's ONE in-process DummyVecEnv,
+    so the fresh VecNormalize/stack/transpose wrappers reuse it. The fake
+    model is a bare sentinel: any ``set_env`` call on it raises
+    AttributeError, pinning the attach-at-load contract."""
+    ec = load_eval_chain()
+    _model, chain = _loaded()
+    dummy = chain.venv.venv.venv  # VecTransposeImage -> stack -> VecNormalize
+    assert isinstance(dummy, DummyVecEnv)
+    monkeypatch.setattr(ec, "build_eval_venv", lambda gate, n_envs=1: dummy)
+
+    captured: dict = {}
+
+    def fake_ppo_load(path, env=None, device=None, **kw):
+        captured["env"] = env
+        captured["device"] = device
+        return object()  # sentinel: set_env on it would AttributeError
+
+    monkeypatch.setattr(ec.PPO, "load", staticmethod(fake_ppo_load))
+
+    model, fresh_chain = ec.load_bundle(_STATE["bundle_path"])
+    assert isinstance(fresh_chain, VecTransposeImage)
+    assert captured["env"] is fresh_chain, (
+        "load_bundle must attach the chain via PPO.load(env=chain) — a "
+        "bare load + set_env() would crash on the real 8-env-trained "
+        "bundle (SB3 set_env asserts num_envs == n_envs)"
+    )
+    assert captured["device"] == "cpu"
