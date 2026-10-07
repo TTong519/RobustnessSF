@@ -359,6 +359,59 @@ def judge(results: dict, gate: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Reward-audit bounds (T-04-06) — the rendered audit gate's judgment
+# ---------------------------------------------------------------------------
+
+
+def audit_episode_ok(gate: dict, raw_return: float, is_success: bool) -> bool:
+    """The pre-agreed audit bound for ONE episode (T-04-06), READ from
+    the gate (WR-02 — never the literals):
+
+    * no-success episodes: raw_return <= audit_no_success_return_max
+      (2.5 — the no-place arithmetic: the 2.0 dense ceiling
+      (FULL_FLAGS_NO_PLACE_MAX_FRACTION x TERMINAL_PLACE_BONUS) minus the
+      2.0 time-penalty ceiling (TIME_PENALTY x 200 max steps) bounds the
+      no-place return at 0.0, so 2.5 leaves margin);
+    * successes: raw_return >= audit_success_return_min (6.0 — the 10.0
+      terminal bonus minus the 2.0 dense ceiling minus the 2.0 time
+      penalty, equality pinned).
+
+    The operators are the pin: a record AT the bound is compliant;
+    2.6 (no success) or 5.9 (success) is a reward-hacking violation.
+    """
+    raw = float(raw_return)
+    if is_success:
+        return raw >= float(gate["audit_success_return_min"])
+    return raw <= float(gate["audit_no_success_return_max"])
+
+
+def audit_verdict(records: list[dict], gate: dict) -> dict:
+    """The audit conjunction over episode records: every episode must
+    satisfy audit_episode_ok; every violating episode is named by its
+    spawn_index so the runner's nonzero exit can name it."""
+    violations = []
+    for rec in records:
+        is_success = bool(rec.get("is_success", False))
+        raw = float(rec.get("raw_return", 0.0))
+        if not audit_episode_ok(gate, raw, is_success):
+            violations.append(
+                {
+                    "spawn_index": int(rec["spawn_index"]),
+                    "mode": rec.get("mode"),
+                    "raw_return": raw,
+                    "is_success": is_success,
+                    "reason": (
+                        "success return below audit_success_return_min"
+                        if is_success
+                        else "no-success return above "
+                        "audit_no_success_return_max"
+                    ),
+                }
+            )
+    return {"pass": len(violations) == 0, "violations": violations}
+
+
+# ---------------------------------------------------------------------------
 # Episode execution + record contract
 # ---------------------------------------------------------------------------
 
