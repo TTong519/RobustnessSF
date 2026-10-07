@@ -303,6 +303,13 @@ def test_full_grid_scope_writes_verdict_results_json(tmp_path, monkeypatch):
     assert echo["per_spawn_majority"] == gate["per_spawn_majority"]
     assert echo["primary_bar"] == gate["primary_bar"]
     assert echo["eval_modes"] == gate["eval_modes"]
+    # top-level headline mirrors of the verdict block — the 04-05 plan
+    # verify prints d['deterministic_pass'] / deterministic_rate /
+    # stochastic_rate directly; they must mirror the nested verdict
+    v = results["verdict"]
+    assert results["deterministic_pass"] == v["deterministic_pass"]
+    assert results["deterministic_rate"] == v["deterministic_rate"]
+    assert results["stochastic_rate"] == v["stochastic_rate"]
     # episodes.jsonl: one row per episode
     lines = (out_dir / "episodes.jsonl").read_text().strip().splitlines()
     assert len(lines) == results["records_count"]

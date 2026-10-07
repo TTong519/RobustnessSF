@@ -206,6 +206,13 @@ def main(argv=None) -> int:
             "gate_echo": gate_echo(gate),  # compact judging pins (04-05 verify)
             "records_count": len(records),
             "verdict": verdict,
+            # Top-level mirrors of the verdict headline — the 04-05 plan
+            # verify prints d['deterministic_pass'] etc. directly. Derived
+            # from the same in-memory verdict block, so they can never
+            # disagree with the nested verdict (Rule 3 reconciliation).
+            "deterministic_pass": verdict["deterministic_pass"],
+            "deterministic_rate": verdict["deterministic_rate"],
+            "stochastic_rate": verdict["stochastic_rate"],
         }
         results_path = write_artifacts(out_dir, records, results)
 
