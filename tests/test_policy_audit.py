@@ -14,6 +14,11 @@ Pin the audit layer before it gates the real bundle:
     the final info (the audit report's per-episode evidence).
   * AUDIT_SPAWN_SET — the plan's five-spawn audit grid [12, 0, 6, 18, 24]
     (patch center first, then spread), all inside the frozen 25-spawn grid.
+  * verdict.json — the standalone judgment artifact the 04-05 plan verify
+    consumes (`no_reward_hacking` at top level, derived from the same
+    in-memory verdict block as report.json; Rule 3 reconciliation — the
+    plan/VALIDATION row 04-05-02 globs verdict.json, which 04-04 did not
+    write).
 
 Pure tests over synthetic records — the RENDERED audit run against the
 real bundle happens in the audit runner, judged in 04-05.
@@ -201,3 +206,51 @@ def test_audit_spawn_set_is_the_planned_five():
     assert pa.AUDIT_SPAWN_SET == [12, 0, 6, 18, 24]
     assert len(pa.AUDIT_SPAWN_SET) == 5
     assert all(0 <= i < int(gate["spawns_total"]) for i in pa.AUDIT_SPAWN_SET)
+
+
+# ---------------------------------------------------------------------------
+# verdict.json — the standalone judgment artifact the 04-05 verify globs
+# ---------------------------------------------------------------------------
+
+
+def test_main_writes_standalone_verdict_json(monkeypatch, tmp_path):
+    """``main`` writes ``verdict.json`` next to report.json with the
+    top-level ``no_reward_hacking`` boolean the 04-05 plan verify asserts
+    (``runs/policy_audit/2*/verdict.json``), derived from the same
+    in-memory verdict block — and a violating episode flips it + the exit
+    code (CLI wiring over faked episode records; no env is constructed)."""
+    ec, pa = load_modules()
+
+    monkeypatch.setattr(
+        ec, "load_bundle", lambda bundle, gate=None, n_envs=1: (object(), object())
+    )
+
+    def fake_run_episodes(*a, **kw):
+        return [audit_record(-1.0, False, spawn_index=0)]
+
+    monkeypatch.setattr(ec, "run_episodes", fake_run_episodes)
+
+    rc = pa.main(["--bundle", str(tmp_path), "--out", str(tmp_path / "audit")])
+    assert rc == 0
+    verdict_doc = json.loads((tmp_path / "audit" / "verdict.json").read_text())
+    assert verdict_doc["no_reward_hacking"] is True
+    assert verdict_doc["violations"] == []
+    assert verdict_doc["bounds"] == {
+        "audit_no_success_return_max": 2.5,
+        "audit_success_return_min": 6.0,
+    }
+    assert (tmp_path / "audit" / "report.json").exists()
+
+    # a violating episode (no-success return 3.0 > the 2.5 bound) flips the
+    # standalone verdict and exits 1 — the two artifacts cannot disagree
+    monkeypatch.setattr(
+        ec,
+        "run_episodes",
+        lambda *a, **kw: [audit_record(3.0, False, spawn_index=0)],
+    )
+    rc_bad = pa.main(["--bundle", str(tmp_path), "--out", str(tmp_path / "audit2")])
+    assert rc_bad == 1
+    bad_doc = json.loads((tmp_path / "audit2" / "verdict.json").read_text())
+    assert bad_doc["no_reward_hacking"] is False
+    assert bad_doc["violations"], "the violating episode must be named"
+    assert bad_doc["violations"][0]["spawn_index"] == 0

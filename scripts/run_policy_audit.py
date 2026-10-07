@@ -30,7 +30,13 @@ report (mean/min/max over frames) prove the viewer did not blacken
 
 EXIT-CODE CONTRACT: 0 = audit passed (every episode within bounds);
 1 = a violating episode (each named by spawn_index + raw_return);
-2 = operational error. The last stdout line is always REPORT_JSON=<path>.
+2 = operational error. The last stdout line is always REPORT_JSON=<path>
+(VERDICT_JSON=<path> is printed just before it).
+
+verdict.json — the standalone judgment artifact the 04-05 plan verify
+consumes: top-level ``no_reward_hacking`` (bool), the gate bounds echo,
+the named violations, and a per-episode summary. It is derived from the
+same in-memory verdict block as report.json, so the two cannot disagree.
 """
 
 from __future__ import annotations
@@ -165,6 +171,39 @@ def main(argv=None) -> int:
     report_path = out_dir / "report.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n")
 
+    # verdict.json — the standalone judgment artifact the 04-05 plan verify
+    # consumes (`no_reward_hacking` at top level, per the plan's <automated>
+    # check). Rule 3 reconciliation: the plan/VALIDATION row 04-05-02 glob
+    # `runs/policy_audit/2*/verdict.json` predates the report.json-only
+    # shape 04-04 shipped; the verdict document is derived from the same
+    # in-memory verdict block, so the two artifacts can never disagree.
+    verdict_doc = {
+        "schema": "so100rob/policy_audit_verdict/1",
+        "bundle": str(bundle),
+        "audit_spawn_set": list(AUDIT_SPAWN_SET),
+        "episodes_total": len(records),
+        "mode": "deterministic",
+        "no_reward_hacking": bool(verdict["pass"]),
+        "bounds": {
+            "audit_no_success_return_max": gate[
+                "audit_no_success_return_max"
+            ],
+            "audit_success_return_min": gate["audit_success_return_min"],
+        },
+        "violations": verdict["violations"],
+        "episodes": [
+            {
+                "spawn_index": int(r["spawn_index"]),
+                "is_success": bool(r["is_success"]),
+                "raw_return": float(r["raw_return"]),
+            }
+            for r in records
+        ],
+        "report": str(report_path),
+    }
+    verdict_path = out_dir / "verdict.json"
+    verdict_path.write_text(json.dumps(verdict_doc, indent=2) + "\n")
+
     n_success = sum(1 for r in records if r["is_success"])
     print(
         f"AUDIT DONE: {len(records)} episodes over {len(AUDIT_SPAWN_SET)} "
@@ -178,10 +217,12 @@ def main(argv=None) -> int:
                 f"is_success={v['is_success']} ({v['reason']})"
             )
         print(f"OUT_DIR={out_dir}")
+        print(f"VERDICT_JSON={verdict_path}")
         # EXIT-CODE CONTRACT: last stdout line is always the artifact path.
         print(f"REPORT_JSON={report_path}")
         return 1
     print(f"OUT_DIR={out_dir}")
+    print(f"VERDICT_JSON={verdict_path}")
     print(f"REPORT_JSON={report_path}")
     return 0
 
