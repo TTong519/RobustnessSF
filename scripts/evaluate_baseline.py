@@ -1,15 +1,16 @@
 #!/usr/bin/env python
 """75-episode dual-mode threshold evaluation runner (TRAIN-03 tooling).
 
-Task 1 (this file's first cut): the TARGETED tracer scope — one spawn,
---episodes episodes, a single mode (default deterministic) — proving the
-shared eval chain end-to-end on a synthetic bundle.
+Two scopes:
 
-Task 2 extends this runner with the FULL-GRID threshold scope: the
-frozen 25-spawn grid x episodes_per_spawn episodes in BOTH eval modes
-(gate eval_modes, D-02), the per-spawn majority rule, and the
-pre-agreed TRAIN-03 judgment (18 of 25 deterministic spawns) — the
-real bundle's judgment executes in 04-05, never here.
+  * TARGETED (the Task 1 tracer): one spawn via --spawns, --episodes
+    episodes, a single mode — proving the shared eval chain end-to-end
+    (synthetic bundle) or spot-checking one spawn on the real bundle.
+  * FULL-GRID (Task 2, the threshold scope): the frozen 25-spawn grid x
+    episodes_per_spawn=3 episodes in BOTH gate eval_modes (D-02), judged
+    by the pre-agreed TRAIN-03 bar (18 of 25 deterministic spawns,
+    per-spawn majority) — the real bundle's judgment executes in 04-05,
+    never here.
 
 Every pinned number is READ from config/train_gate.json (WR-02) or
 so100rob.constants at run time; nothing is re-hardcoded. Eval runs on
@@ -119,12 +120,87 @@ def main(argv=None) -> int:
         return 1
 
     if args.full_grid:
+        # The full-grid threshold scope (Task 2): BOTH gate eval modes over
+        # the frozen grid — D-02: every threshold evaluation runs both.
+        if args.mode != "both":
+            print(
+                "ERROR: --full-grid runs BOTH gate eval_modes (D-02) — pass "
+                "--mode both",
+                file=sys.stderr,
+            )
+            return 1
+        if args.spawns is not None:
+            print(
+                "ERROR: --spawns is the targeted-scope flag and cannot "
+                "combine with --full-grid",
+                file=sys.stderr,
+            )
+            return 1
+        if args.episodes is not None and args.episodes != int(
+            gate["episodes_per_spawn"]
+        ):
+            print(
+                f"ERROR: --episodes {args.episodes} != the pinned "
+                f"episodes_per_spawn={gate['episodes_per_spawn']} — the "
+                "threshold grid is pre-agreed (D-01)",
+                file=sys.stderr,
+            )
+            return 1
+
+        bundle = args.bundle.resolve()
+        if not bundle.is_dir():
+            print(f"ERROR: bundle dir {bundle} does not exist", file=sys.stderr)
+            return 1
+
+        seed_base = int(gate["tuning"]["seed"])
+        spawn_indices = ec.full_grid_spawn_indices(gate)
+        modes = list(gate["eval_modes"])
+        model, chain = ec.load_bundle(bundle, gate)
+
+        records: list[dict] = []
+        results_by_mode: dict[str, dict[int, list[dict]]] = {m: {} for m in modes}
+        for mode in modes:
+            deterministic = mode == "deterministic"
+            for idx in spawn_indices:
+                # unique per-spawn seed ranges; run_episodes derives +ep
+                seed = seed_base + idx * episodes_per_spawn
+                recs = ec.run_episodes(
+                    model,
+                    chain,
+                    spawn_index=idx,
+                    n_episodes=episodes_per_spawn,
+                    deterministic=deterministic,
+                    seed=seed,
+                )
+                results_by_mode[mode][idx] = recs
+                records.extend(recs)
+
+        verdict = ec.judge(results_by_mode, gate)
+        out_dir = args.out if args.out is not None else RUNS_EVAL_ROOT / utc_stamp()
+        results = {
+            "scope": "full_grid",
+            "bundle": str(bundle),
+            "episodes_per_spawn": episodes_per_spawn,
+            "modes": modes,
+            "seed_base": seed_base,
+            "gate": gate,  # the verbatim pin echo proves which pin was consumed
+            "records_count": len(records),
+            "verdict": verdict,
+        }
+        results_path = write_artifacts(out_dir, records, results)
+
+        n_pass = sum(1 for ok in verdict["per_spawn"][gate["primary_bar"]].values() if ok)
         print(
-            "ERROR: --full-grid arrives with Task 2 (the full-grid "
-            "threshold scope); run without it for the targeted tracer scope",
-            file=sys.stderr,
+            f"EVAL DONE: {len(records)} episodes over "
+            f"{verdict['spawns_evaluated']} spawns, {n_pass} primary-bar "
+            f"spawns successful -> deterministic_pass="
+            f"{verdict['deterministic_pass']}"
         )
-        return 1
+        print(f"OUT_DIR={out_dir}")
+        # EXIT-CODE CONTRACT: last stdout line is always the artifact path.
+        print(f"RESULTS_JSON={results_path}")
+        return 0
+
     if args.spawns is None:
         print(
             "ERROR: targeted scope needs --spawns <spawn_index> (or wait "

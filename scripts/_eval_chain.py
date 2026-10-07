@@ -291,6 +291,74 @@ def make_synthetic_bundle(path, gate: dict | None = None):
 
 
 # ---------------------------------------------------------------------------
+# Pure judgment layer (TRAIN-03) — no env, no I/O; the 04-05 judgment and
+# every test consume these over records + the gate alone
+# ---------------------------------------------------------------------------
+
+
+def per_spawn_success(episodes, majority: int) -> bool:
+    """D-01 majority rule: a spawn counts successful on a majority of its
+    episodes (>= majority successes of episodes_per_spawn)."""
+    successes = sum(1 for ep in episodes if ep.get("is_success"))
+    return successes >= int(majority)
+
+
+def full_grid_spawn_indices(gate: dict) -> list[int]:
+    """The full frozen grid as spawn indices, in the file's entry order —
+    integrity-checked against gate spawns_total AND SPAWN_GRID_SIZE inside
+    load_frozen_spawns (a doctored pin fails loudly, T-04-04)."""
+    grid = load_frozen_spawns(gate)
+    return list(range(len(grid)))
+
+
+def judge(results: dict, gate: dict) -> dict:
+    """The pre-agreed TRAIN-03 verdict over {mode: {spawn_index: records}}.
+
+    The bar is the PRIMARY mode's (gate primary_bar, D-02): deterministic_pass
+    = successful primary spawns >= gate min_spawns_successful, judged over
+    EXACTLY the gate spawns_total grid (an off-grid primary result set
+    fails loudly — never a partial sweep). The stochastic rate is a
+    reported reference number; it can never flip the deterministic verdict.
+    """
+    total = int(gate["spawns_total"])
+    majority = int(gate["per_spawn_majority"])
+    primary = str(gate["primary_bar"])
+
+    if primary not in results:
+        raise ValueError(
+            f"the primary bar {primary!r} is missing from results — the "
+            "TRAIN-03 verdict cannot be computed"
+        )
+
+    per_spawn: dict[str, dict[int, bool]] = {}
+    for mode, mode_results in results.items():
+        if set(mode_results.keys()) != set(range(total)):
+            raise ValueError(
+                f"mode {mode!r} evaluated {sorted(mode_results)} but the "
+                f"frozen grid is spawns_total={total} — refusing to judge "
+                "a partial/off-grid sweep"
+            )
+        per_spawn[mode] = {
+            i: per_spawn_success(mode_results[i], majority) for i in range(total)
+        }
+
+    n_primary = sum(1 for ok in per_spawn[primary].values() if ok)
+    stochastic = per_spawn.get("stochastic")
+    n_stochastic = (
+        sum(1 for ok in stochastic.values() if ok) if stochastic is not None else None
+    )
+    return {
+        "deterministic_pass": n_primary >= int(gate["min_spawns_successful"]),
+        "deterministic_rate": n_primary / total,
+        "stochastic_rate": (
+            n_stochastic / total if n_stochastic is not None else None
+        ),
+        "per_spawn": per_spawn,
+        "spawns_evaluated": total,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Episode execution + record contract
 # ---------------------------------------------------------------------------
 
