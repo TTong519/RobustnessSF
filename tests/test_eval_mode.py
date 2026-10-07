@@ -270,10 +270,20 @@ def test_predict_determinism_is_per_call(monkeypatch):
     ec.run_episodes(
         model, chain, spawn_index=0, n_episodes=1, deterministic=True, seed=0
     )
+    first = list(captured)
     ec.run_episodes(
         model, chain, spawn_index=0, n_episodes=1, deterministic=False, seed=0
     )
-    assert captured == [True, False], (
-        f"predict must be called with the per-call deterministic flag "
-        f"(True then False); captured {captured}"
+    second = list(captured[len(first):])
+    # predict is called EVERY step: every call in the deterministic episode
+    # carries True, every call in the stochastic episode carries False.
+    assert len(first) > 0, "the deterministic episode never called predict"
+    assert all(first), (
+        f"the deterministic episode must call predict with "
+        f"deterministic=True on every step; captured {first[:5]}..."
+    )
+    assert len(second) > 0, "the stochastic episode never called predict"
+    assert not any(second), (
+        f"the stochastic episode must call predict with "
+        f"deterministic=False on every step; captured {second[:5]}..."
     )
