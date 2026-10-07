@@ -294,6 +294,15 @@ def test_full_grid_scope_writes_verdict_results_json(tmp_path, monkeypatch):
     assert results["records_count"] == 2 * total * int(gate["episodes_per_spawn"])
     # the verbatim pin echo proves which pin the run consumed
     assert results["gate"] == gate
+    # the compact gate_echo is what the 04-05 plan verify globs — it must
+    # mirror the committed judging pins (Rule 3 reconciliation, T-04-17)
+    echo = results["gate_echo"]
+    assert echo["min_spawns_successful"] == gate["min_spawns_successful"] == 18
+    assert echo["spawns_total"] == gate["spawns_total"]
+    assert echo["episodes_per_spawn"] == gate["episodes_per_spawn"]
+    assert echo["per_spawn_majority"] == gate["per_spawn_majority"]
+    assert echo["primary_bar"] == gate["primary_bar"]
+    assert echo["eval_modes"] == gate["eval_modes"]
     # episodes.jsonl: one row per episode
     lines = (out_dir / "episodes.jsonl").read_text().strip().splitlines()
     assert len(lines) == results["records_count"]

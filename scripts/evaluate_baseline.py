@@ -93,6 +93,25 @@ def resolve_modes(mode: str) -> list[str]:
     return [mode]
 
 
+def gate_echo(gate: dict) -> dict:
+    """Compact echo of the pins the verdict consumed — the 04-05 plan
+    verify asserts ``gate_echo.min_spawns_successful`` against the
+    committed gate (T-04-17 repudiation guard). Derived from the same
+    loaded gate as the verbatim ``gate`` field, so the two can never
+    disagree. Rule 3 reconciliation: 04-04 shipped the verbatim gate
+    under ``gate`` only; the 04-05 plan/VALIDATION row 04-05-01 globs
+    ``gate_echo``."""
+    return {
+        "schema": gate["schema"],
+        "spawns_total": gate["spawns_total"],
+        "min_spawns_successful": gate["min_spawns_successful"],
+        "episodes_per_spawn": gate["episodes_per_spawn"],
+        "per_spawn_majority": gate["per_spawn_majority"],
+        "primary_bar": gate["primary_bar"],
+        "eval_modes": gate["eval_modes"],
+    }
+
+
 def write_artifacts(out_dir: Path, records: list[dict], results: dict) -> Path:
     """episodes.jsonl (one row per episode, Phase 5 EVAL-02 anticipates
     this shape) + results.json (the run's summary)."""
@@ -184,6 +203,7 @@ def main(argv=None) -> int:
             "modes": modes,
             "seed_base": seed_base,
             "gate": gate,  # the verbatim pin echo proves which pin was consumed
+            "gate_echo": gate_echo(gate),  # compact judging pins (04-05 verify)
             "records_count": len(records),
             "verdict": verdict,
         }
@@ -246,6 +266,7 @@ def main(argv=None) -> int:
         "modes": modes,
         "seed_base": seed_base,
         "gate": gate,  # the verbatim pin echo proves which pin was consumed
+        "gate_echo": gate_echo(gate),  # compact judging pins (04-05 verify)
         "records_count": len(records),
     }
     results_path = write_artifacts(out_dir, records, results)
