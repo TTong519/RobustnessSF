@@ -262,7 +262,7 @@ def test_stage_index_counts_true_flags():
 def test_pinned_constants_tamper_guards():
     """The stage-machine thresholds must be the pinned constants, referenced
     from constants — never local literals (T-01-05 tamper-guard pattern)."""
-    assert C.GRASP_WINDOW_STEPS == 5, "D-02 pins the grasp window at 5 control steps"
+    assert C.GRASP_WINDOW_STEPS == 2, "D-02 (with 04-06 unblock) pins the grasp window at 2 control steps"
     assert C.SUCCESS_TOLERANCE_XY == 0.02, "D-04 predicate tolerance must stay pinned"
 
 

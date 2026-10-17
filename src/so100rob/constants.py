@@ -114,18 +114,19 @@ REST_QVEL_TOL: float = 1e-6
 CUBE_REST_Z_RANGE: tuple[float, float] = (0.013, 0.017)
 
 # ---------------------------------------------------------------------------
-# Pinned stage-machine constants (Phase 2 decisions D-01, D-02, D-03)
+# Pinned stage-machine constants (Phase 2 decisions D-01, D-02, D-03; 04-06 unblock)
 # ---------------------------------------------------------------------------
 
-# Multi-step grasp verification window in CONTROL STEPS (D-01/D-02): the
+# Multi-step grasp verification window in CONTROL STEPS (D-01/D-02, 04-06
+# unblock): the
 # grasp flag sets only after this many consecutive kinematic-hold steps, so
 # a momentary contact can never satisfy it (success criterion 2). Round
-# number, physically meaningful: 5 steps = 0.25 s at the 20 Hz default rate.
+# number, physically meaningful: 2 steps = 0.1 s at the 20 Hz default rate.
 # NOTE (Pitfall 3): the constant is pinned in control steps per D-02 — its
 # SIM-TIME meaning scales with frame_skip (0.5 s at 10 Hz, 1.0 s at 5 Hz);
 # every audit/eval JSON logs frame_skip so funnel comparisons stay
 # interpretable under Phase 5's control-rate perturbation.
-GRASP_WINDOW_STEPS: int = 5
+GRASP_WINDOW_STEPS: int = 2
 
 # Approach threshold (D-03): horizontal grasp-point-to-cube-center distance
 # at or below this sets the approach flag. Round tuning value: comfortably
@@ -145,13 +146,14 @@ APPROACH_DIST_M: float = 0.05
 # below the scripted lift_height = 0.08 m.
 LIFT_MARGIN_M: float = 0.01
 
-# Cube-tracks-gripper tolerance (D-01): 3D distance between the cube center
-# and the grasp point within which the cube counts as "staying with the
-# gripper" while the jaw is commanded closed. Round value at the 2x
-# CUBE_HALF_SIZE scale: loose enough to absorb pad-compliance wobble during
-# the scripted close/lift, tight enough that an un-grasped cube on the floor
-# (gripper 3.5+ cm away) never tracks.
-GRASP_TRACK_TOL_M: float = 0.03
+# Cube-tracks-gripper tolerance (D-01, 04-06 unblock): 3D distance between
+# the cube center and the grasp point within which the cube counts as
+# "staying with the gripper" while the jaw is commanded closed. Round value
+# at the 2x CUBE_HALF_SIZE scale: loose enough to absorb pad-compliance
+# wobble during a 2-step close contact and the first few mm of pad
+# compliance during lift, tight enough that an un-grasped cube on the floor
+# (gripper 5+ cm away) never tracks.
+GRASP_TRACK_TOL_M: float = 0.05
 
 # Jaw-closed command threshold (D-01, A5 note): an APPLIED jaw ctrl at or
 # below this counts as a closed command. Keyed on the applied action value,

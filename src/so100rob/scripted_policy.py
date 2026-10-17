@@ -394,14 +394,16 @@ def momentary_contact_sequence(
     goal_pos,
     params: TrajectoryParams | None = None,
     *,
-    close_steps: int = 2,
+    close_steps: int = 1,
     retreat_steps: int = 20,
     debug: dict | None = None,
 ) -> list[tuple[np.ndarray, str]]:
     """D-09a negative control: sub-window contact, then retreat.
 
     The stock trajectory up to the close phase, only ``close_steps``
-    close-labeled steps (below GRASP_WINDOW_STEPS), then a retreat hold
+    close-labeled steps (below GRASP_WINDOW_STEPS; default close_steps=1 for
+    the 04-06 loosened window of 2 — momentary contact strictly below the
+    window), then a retreat hold
     on the pre-grasp hover action. Expected outcome: stage_grasp,
     stage_lift, stage_place and is_success never set — the multi-step
     verification window is the only path to the grasp flag.

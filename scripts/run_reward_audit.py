@@ -201,7 +201,7 @@ def _assert_positive(aud: _Audit, steps, labels, params: TrajectoryParams) -> No
 
         # Criterion 2, positive half: the grasp flip must land inside the
         # close-labeled run — the verification window accepting a REAL
-        # sustained hold (stock close_dwell_steps=10 > GRASP_WINDOW_STEPS=5),
+        # sustained hold (stock close_dwell_steps=10 > GRASP_WINDOW_STEPS=2),
         # so the window is not a false-negative gate.
         first_close = labels.index("close")
         grasp_i = flips["stage_grasp"]

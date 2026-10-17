@@ -84,7 +84,7 @@ def test_happy_path_flips_all_flags_strictly_in_order(gate_env, gate_params):
     final-only); terminated follows place; truncated never fires; every
     info value is finite."""
     # Tamper guards (T-01-05 pattern): pinned constants, never literals.
-    assert C.GRASP_WINDOW_STEPS == 5
+    assert C.GRASP_WINDOW_STEPS == 2
     assert C.SUCCESS_TOLERANCE_XY == 0.02
 
     steps, phi_0 = _roll_happy_path(gate_env, gate_params)
@@ -314,21 +314,22 @@ def _cube_spawn(env) -> np.ndarray:
 
 
 def test_momentary_contact_never_sets_grasp(gate_env, gate_params):
-    """D-09a: 2 close steps — below GRASP_WINDOW_STEPS=5 — then a pre-grasp
+    """D-09a: 1 close step — below GRASP_WINDOW_STEPS=2 — then a pre-grasp
     retreat hold. stage_grasp, stage_lift, stage_place and is_success must
     be False at EVERY step and in the final info (stage_approach may
     legitimately be True — the home-pose pad-to-cube distance is below the
     approach threshold, so approach-at-episode-start is physics, not
     progress)."""
-    assert C.GRASP_WINDOW_STEPS == 5, "tamper guard: the pinned window (D-02)"
+    assert C.GRASP_WINDOW_STEPS == 2, "tamper guard: the pinned window (D-02, 04-06 unblock)"
     env = gate_env
     cube_spawn = _cube_spawn(env)
     seq = momentary_contact_sequence(
-        env.model, env.data, cube_spawn, C.GOAL_POS, gate_params
+        env.model, env.data, cube_spawn, C.GOAL_POS, gate_params,
+        close_steps=1,
     )
-    # Structural: exactly 2 close-labeled steps — below the window.
+    # Structural: exactly 1 close-labeled step — below the window.
     close_count = sum(1 for _, label in seq if label == "close")
-    assert close_count == 2 < C.GRASP_WINDOW_STEPS, (
+    assert close_count == 1 < C.GRASP_WINDOW_STEPS, (
         f"momentary contact must close for fewer than GRASP_WINDOW_STEPS "
         f"steps, got {close_count}"
     )
