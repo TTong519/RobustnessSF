@@ -316,3 +316,14 @@ def test_run_mode_checkpoint_discipline():
         "the checkpoints dir must be write-only (crash recovery); a second "
         "reference would be a selection code path (D-05 violation)"
     )
+
+def test_selection_json_line_is_repo_relative():
+    """04-07 Rule 3 reconciliation pin: the tune pass's SELECTION_JSON line
+    must be the REPO-RELATIVE spelling "SELECTION_JSON=runs/train/tune/
+    selection.json" — the 04-07 plan/VALIDATION freshness verify greps that
+    exact literal (an absolute path would never match it; the 04-05
+    tooling-to-plan-spelling pattern)."""
+    train = load_train()
+    assert train._selection_json_line() == (
+        "SELECTION_JSON=runs/train/tune/selection.json"
+    )

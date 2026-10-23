@@ -702,6 +702,19 @@ def _chosen_lr_from_selection() -> float | None:
     return float(json.loads(path.read_text())["chosen_lr"])
 
 
+def _selection_json_line() -> str:
+    """The tune pass's machine-readable selection-record pointer.
+
+    Repo-relative spelling (04-07 Rule 3 reconciliation, the 04-05
+    tooling-to-plan-spelling pattern): the plan/VALIDATION verify greps
+    the literal "SELECTION_JSON=runs/train/tune/selection.json" to prove
+    the selection record's freshness — an absolute path would never
+    match it. The path resolves against the repo root (the runner's
+    cwd contract).
+    """
+    return f"SELECTION_JSON={(TUNE_ROOT / 'selection.json').relative_to(REPO_ROOT)}"
+
+
 def run_tune(gate: dict) -> dict:
     """The gate's LR tuning pass: run EVERY tuning.lr_grid entry once at
     tuning.steps_per_variant steps (no --lr/--steps override — the sweep
@@ -836,7 +849,7 @@ def main() -> int:
                 f"{ {k: round(v, 3) for k, v in record['metrics'].items()} }",
                 flush=True,
             )
-            print(f"SELECTION_JSON={TUNE_ROOT / 'selection.json'}", flush=True)
+            print(_selection_json_line(), flush=True)
             return 0
 
         if args.mode == "retry":
