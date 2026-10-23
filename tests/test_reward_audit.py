@@ -68,6 +68,7 @@ def test_reward_audit_exit_contract_and_report_shape():
     snapshot = summary["constants"]
     for key in (
         "GRASP_WINDOW_STEPS",
+        "GRASP_CUBE_OFF_FLOOR_Z_M",
         "STAGE_POTENTIALS",
         "TERMINAL_PLACE_BONUS",
         "TIME_PENALTY",

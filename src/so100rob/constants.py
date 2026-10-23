@@ -162,6 +162,20 @@ GRASP_TRACK_TOL_M: float = 0.05
 # deterministic). Script closed = 0.13 passes; open = 0.35 fails.
 GRASP_JAW_CLOSED_CTRL_MAX: float = 0.20
 
+# Off-floor grasp z-clause (04-07 pre-agreement — the D-03 second-miss
+# decision, ranked option 1 in runs/investigation-04-loose-predicate.md
+# section 5, made 2026-10-22): the grasp flag additionally requires the
+# cube center STRICTLY ABOVE this height at window completion, so a
+# closed-jaw push (cube inside CUBE_REST_Z_RANGE throughout) can never
+# set grasp — the flag now operationally distinguishes carry from push.
+# Pinned at the rest-band top CUBE_REST_Z_RANGE[1] ("above rest height").
+# The completion-check shape is probe-grounded (2026-10-22, all 25 frozen
+# spawns): the scripted positive control flips grasp at lift step 0 (24
+# spawns) or 1 (spawn 23), always BEFORE lift — strict approach < grasp
+# < lift < place ordering holds everywhere; a during-hold z-clause shape
+# was falsified by the same probe (it would flip lift before grasp).
+GRASP_CUBE_OFF_FLOOR_Z_M: float = 0.017
+
 # ---------------------------------------------------------------------------
 # Pinned reward constants (Phase 2 decisions D-05, D-06)
 # ---------------------------------------------------------------------------

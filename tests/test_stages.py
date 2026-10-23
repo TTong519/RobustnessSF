@@ -368,6 +368,11 @@ def test_pinned_constants_tamper_guards():
     from constants — never local literals (T-01-05 tamper-guard pattern)."""
     assert C.GRASP_WINDOW_STEPS == 2, "D-02 (with 04-06 unblock) pins the grasp window at 2 control steps"
     assert C.SUCCESS_TOLERANCE_XY == 0.02, "D-04 predicate tolerance must stay pinned"
+    assert C.GRASP_CUBE_OFF_FLOOR_Z_M == C.CUBE_REST_Z_RANGE[1] == 0.017, (
+        "the 04-07 off-floor z-clause pin: GRASP_CUBE_OFF_FLOOR_Z_M must "
+        "equal the cube rest-band top CUBE_REST_Z_RANGE[1] == 0.017 "
+        "('above rest height' — the D-03 second-miss decision, ranked option 1)"
+    )
 
 
 def test_validation_rejects_invalid_constants(monkeypatch):
@@ -379,11 +384,13 @@ def test_validation_rejects_invalid_constants(monkeypatch):
         stages._validate_constants()
     monkeypatch.undo()
 
-    # non-positive thresholds
+    # non-positive thresholds, and the 04-07 off-floor pin driven below the
+    # rest-band top (a push would become flaggable again)
     for knob, bad in (
         ("APPROACH_DIST_M", 0.0),
         ("LIFT_MARGIN_M", -0.01),
         ("GRASP_TRACK_TOL_M", 0.0),
+        ("GRASP_CUBE_OFF_FLOOR_Z_M", 0.010),
     ):
         monkeypatch.setattr(C, knob, bad)
         with pytest.raises(ValueError, match=knob):

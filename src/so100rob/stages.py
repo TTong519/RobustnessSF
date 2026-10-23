@@ -9,12 +9,19 @@ re-derives gripper geometry; unit tests run it with hand-set numbers.
 Stage semantics (Phase 2 CONTEXT decisions):
   * approach (D-03): horizontal grasp-point-to-cube-center distance below
     APPROACH_DIST_M.
-  * grasp (D-01/D-02): a KINEMATIC HOLD sustained over GRASP_WINDOW_STEPS
-    consecutive control steps — jaw closed on the cube (applied jaw ctrl at
-    or below GRASP_JAW_CLOSED_CTRL_MAX, keyed on the applied action value
-    per the carried A5 note) AND the cube tracking the grasp point within
-    GRASP_TRACK_TOL_M (3D). A hold break resets the counter, so momentary
-    contact can never satisfy the window (success criterion 2).
+  * grasp (D-01/D-02, 04-07): a KINEMATIC HOLD sustained over
+    GRASP_WINDOW_STEPS consecutive control steps — jaw closed on the cube
+    (applied jaw ctrl at or below GRASP_JAW_CLOSED_CTRL_MAX, keyed on the
+    applied action value per the carried A5 note) AND the cube tracking
+    the grasp point within GRASP_TRACK_TOL_M (3D) — that COMPLETES with
+    the cube center strictly above GRASP_CUBE_OFF_FLOOR_Z_M (the 04-07
+    off-floor z-clause, pinned at the CUBE_REST_Z_RANGE top: "a sustained
+    jaw-closed kinematic hold that completes with the cube OFF the
+    floor"). A hold break resets the counter, so momentary contact can
+    never satisfy the window (success criterion 2); a closed-jaw push
+    (cube in the rest band throughout) accumulates the counter but can
+    never satisfy the z-clause, so the flag operationally distinguishes
+    carry from push.
   * lift (D-03): cube z above the CUBE_REST_Z_RANGE top plus LIFT_MARGIN_M.
   * place (D-03/T-01-05): the pinned predicate ``resting_at_goal`` from
     so100rob.scripted_policy, IMPORTED — never re-defined locally.
@@ -81,6 +88,16 @@ def _validate_constants() -> None:
         raise ValueError(
             f"GRASP_JAW_CLOSED_CTRL_MAX must be positive, got {C.GRASP_JAW_CLOSED_CTRL_MAX!r}"
         )
+    if not C.GRASP_CUBE_OFF_FLOOR_Z_M > 0:
+        raise ValueError(
+            f"GRASP_CUBE_OFF_FLOOR_Z_M must be positive, got {C.GRASP_CUBE_OFF_FLOOR_Z_M!r}"
+        )
+    if C.GRASP_CUBE_OFF_FLOOR_Z_M < C.CUBE_REST_Z_RANGE[1]:
+        raise ValueError(
+            f"GRASP_CUBE_OFF_FLOOR_Z_M must be at or above the cube rest-band "
+            f"top CUBE_REST_Z_RANGE[1]={C.CUBE_REST_Z_RANGE[1]} (the 04-07 pin: "
+            f"'above rest height'), got {C.GRASP_CUBE_OFF_FLOOR_Z_M!r}"
+        )
 
 
 _validate_constants()  # fail loudly at import (T-02-02)
@@ -104,6 +121,16 @@ def update(state: StageState, sim: SimReadout) -> None:
     readout can un-set an already-True flag. The hold predicate is evaluated
     only while grasp is still False — after grasp sets, the counter is
     frozen and the window is never re-armed within the episode.
+
+    04-07 completion check: the grasp flag sets only when the hold counter
+    has reached GRASP_WINDOW_STEPS AND the cube center is strictly above
+    GRASP_CUBE_OFF_FLOOR_Z_M on that step — the z readout is evaluated at
+    window completion, so the counter still accumulates during the at-rest
+    close (that accumulation is what preserves strict approach < grasp <
+    lift ordering on the scripted positive control, per the 2026-10-22
+    probe). A closed-jaw at-rest hold (push) accumulates but never sets the
+    flag; the z-clause ANDs on top of the completed window and never ORs
+    around it (the ENV-05 momentary-contact contract).
     """
     if not state.approach:
         state.approach = sim.approach_dist_m <= C.APPROACH_DIST_M
@@ -111,7 +138,10 @@ def update(state: StageState, sim: SimReadout) -> None:
     if not state.grasp:
         if _hold_pred(sim):
             state.grasp_hold_counter += 1
-            if state.grasp_hold_counter >= C.GRASP_WINDOW_STEPS:
+            if state.grasp_hold_counter >= C.GRASP_WINDOW_STEPS and (
+                float(np.asarray(sim.cube_pos).reshape(-1)[2])
+                > C.GRASP_CUBE_OFF_FLOOR_Z_M
+            ):
                 state.grasp = True
         else:
             state.grasp_hold_counter = 0

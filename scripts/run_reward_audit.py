@@ -199,17 +199,24 @@ def _assert_positive(aud: _Audit, steps, labels, params: TrajectoryParams) -> No
             f"lift < place, got {dict(flips)}",
         )
 
-        # Criterion 2, positive half: the grasp flip must land inside the
-        # close-labeled run — the verification window accepting a REAL
-        # sustained hold (stock close_dwell_steps=10 > GRASP_WINDOW_STEPS=2),
-        # so the window is not a false-negative gate.
+        # Criterion 2, positive half (04-07 re-pin): the grasp flip must land
+        # inside the LIFT run — the window COMPLETES as the cube leaves the
+        # floor (the off-floor z-clause is the only path to the flag: the
+        # counter accumulates during the at-rest close, and the flag sets on
+        # the first above-pin z readout). A flip inside the close run means
+        # the z-clause is not wired.
         first_close = labels.index("close")
         grasp_i = flips["stage_grasp"]
         aud.check(
-            "criterion2_grasp_flip_within_real_close_hold",
-            first_close <= grasp_i < first_close + params.close_dwell_steps,
-            f"grasp flip at step {grasp_i} outside the close run "
-            f"[{first_close}, {first_close + params.close_dwell_steps})",
+            "criterion2_grasp_flip_completes_as_cube_leaves_floor",
+            first_close + params.close_dwell_steps
+            <= grasp_i
+            < first_close + params.close_dwell_steps + params.waypoint_dwell_steps,
+            f"grasp flip at step {grasp_i} outside the lift run "
+            f"[{first_close + params.close_dwell_steps}, "
+            f"{first_close + params.close_dwell_steps + params.waypoint_dwell_steps}) "
+            f"— a flip inside the close run means the off-floor z-clause is "
+            f"not wired (04-07)",
         )
 
         place_i = flips["stage_place"]
@@ -590,6 +597,7 @@ def main() -> int:
                 "LIFT_MARGIN_M": C.LIFT_MARGIN_M,
                 "GRASP_TRACK_TOL_M": C.GRASP_TRACK_TOL_M,
                 "GRASP_JAW_CLOSED_CTRL_MAX": C.GRASP_JAW_CLOSED_CTRL_MAX,
+                "GRASP_CUBE_OFF_FLOOR_Z_M": C.GRASP_CUBE_OFF_FLOOR_Z_M,
                 "STAGE_POTENTIALS": list(C.STAGE_POTENTIALS),
                 "APPROACH_W": C.APPROACH_W,
                 "APPROACH_POTENTIAL_SCALE_M": C.APPROACH_POTENTIAL_SCALE_M,
