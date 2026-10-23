@@ -48,6 +48,21 @@ def _holding_readout(jaw_ctrl=None):
     )
 
 
+def _at_rest_holding_readout(jaw_ctrl=None):
+    """A closed-jaw hold readout with the cube ON the floor (04-07): jaw
+    closed command, cube tracking the grasp point exactly, cube center at
+    z=0.0149 inside CUBE_REST_Z_RANGE — the closed-jaw PUSH shape the
+    off-floor z-clause must reject (D-03 second-miss decision, ranked
+    option 1: the grasp flag additionally requires the cube center
+    strictly above GRASP_CUBE_OFF_FLOOR_Z_M)."""
+    return _readout(
+        cube_pos=(0.0, -0.22, 0.0149),
+        grasp_point=(0.0, -0.22, 0.0149),
+        jaw_ctrl=C.GRASP_JAW_CLOSED_CTRL_MAX - 0.01 if jaw_ctrl is None else jaw_ctrl,
+        approach_dist=0.001,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Approach / lift / place threshold semantics (D-03)
 # ---------------------------------------------------------------------------
@@ -201,6 +216,95 @@ def test_jaw_closed_without_tracking_never_holds():
         stages.update(state, air)
     assert not state.grasp
     assert state.grasp_hold_counter == 0
+
+
+# ---------------------------------------------------------------------------
+# Off-floor z-clause (04-07, D-03 second-miss decision — ranked option 1)
+# ---------------------------------------------------------------------------
+
+
+def test_push_at_rest_height_never_sets_grasp():
+    """04-07 THE new behavior: a closed-jaw hold with the cube center inside
+    CUBE_REST_Z_RANGE (the push shape — jaw commanded closed, cube tracking
+    the grasp point, cube still ON the floor) can never set grasp, no matter
+    how many consecutive steps it persists (20 steps = 10x the window)."""
+    state = stages.StageState()
+    at_rest = _at_rest_holding_readout()
+    for step in range(20):
+        stages.update(state, at_rest)
+        assert not state.grasp, (
+            f"a closed-jaw at-rest hold (push) set grasp at step {step + 1} — "
+            "the off-floor z-clause must reject the push shape forever (04-07)"
+        )
+    assert state.grasp_hold_counter >= 20, (
+        "the counter still accumulates during the at-rest close (the "
+        "ENV-05 multi-step window contract is preserved by the z-clause)"
+    )
+
+
+def test_completed_hold_sets_grasp_as_cube_leaves_floor():
+    """Completion semantics (04-07): the at-rest hold accumulates the window
+    (grasp stays False at every at-rest step), then ONE readout with the cube
+    above GRASP_CUBE_OFF_FLOOR_Z_M — jaw still closed, still tracking — sets
+    grasp exactly on that step; the z-clause is not a re-armed window."""
+    state = stages.StageState()
+    at_rest = _at_rest_holding_readout()
+    for step in range(C.GRASP_WINDOW_STEPS + 3):
+        stages.update(state, at_rest)
+        assert not state.grasp, (
+            f"grasp must stay False through the at-rest hold (step {step + 1}) "
+            "— the cube is on the floor"
+        )
+    off_floor = _readout(
+        cube_pos=(0.0, -0.22, C.GRASP_CUBE_OFF_FLOOR_Z_M + 0.005),
+        grasp_point=(0.0, -0.22, C.GRASP_CUBE_OFF_FLOOR_Z_M + 0.005),
+        jaw_ctrl=C.GRASP_JAW_CLOSED_CTRL_MAX - 0.01,
+        approach_dist=0.001,
+    )
+    stages.update(state, off_floor)
+    assert state.grasp, (
+        "the completed hold must set grasp exactly on the step the cube "
+        "center leaves the floor (strictly above GRASP_CUBE_OFF_FLOOR_Z_M)"
+    )
+
+
+def test_grasp_off_floor_boundary_strictly_above():
+    """Boundary strictness (04-07): with the hold counter already at/above
+    the window, cube z exactly equal to GRASP_CUBE_OFF_FLOOR_Z_M does NOT
+    set grasp; one float64 epsilon above DOES. Strictly-greater in float64,
+    no tolerance."""
+    state = stages.StageState()
+    at_rest = _at_rest_holding_readout()
+    for step in range(C.GRASP_WINDOW_STEPS + 1):
+        stages.update(state, at_rest)
+        assert not state.grasp, (
+            f"grasp must stay False through the at-rest hold (step {step + 1})"
+        )
+
+    pin = C.GRASP_CUBE_OFF_FLOOR_Z_M
+    at_pin = _readout(
+        cube_pos=(0.0, -0.22, pin),
+        grasp_point=(0.0, -0.22, pin),
+        jaw_ctrl=C.GRASP_JAW_CLOSED_CTRL_MAX - 0.01,
+        approach_dist=0.001,
+    )
+    stages.update(state, at_pin)
+    assert not state.grasp, (
+        "cube z exactly at GRASP_CUBE_OFF_FLOOR_Z_M must NOT set grasp — "
+        "the clause is strictly-greater, no tolerance"
+    )
+
+    eps = float(np.nextafter(pin, np.inf))
+    above = _readout(
+        cube_pos=(0.0, -0.22, eps),
+        grasp_point=(0.0, -0.22, eps),
+        jaw_ctrl=C.GRASP_JAW_CLOSED_CTRL_MAX - 0.01,
+        approach_dist=0.001,
+    )
+    stages.update(state, above)
+    assert state.grasp, (
+        "one float64 epsilon above GRASP_CUBE_OFF_FLOOR_Z_M must set grasp"
+    )
 
 
 # ---------------------------------------------------------------------------
