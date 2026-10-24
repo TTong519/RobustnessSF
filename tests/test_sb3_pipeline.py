@@ -214,6 +214,69 @@ def test_state_mode_flat_fallback_shape():
     assert obs.shape == (2, C.OBS_STATE_DIM * C.OBS_N_STACK)
 
 
+def test_cv_chain_integration_rows():
+    """04-08 CV-chain integration row (the legacy rows above are unchanged):
+    the full training-order chain over the CV construction —
+    make_vec_env(vision+cv) -> VecNormalize(norm_obs_keys=[state]) ->
+    ImageOnlyFrameStack(4) -> VecTransposeImage — keeps the D-11/D-08
+    discipline on the 32-dim contract: the state key passes the stacker
+    untouched at (n_envs, 32) float32, the stacked 4-channel grayscale
+    image space is still SB3-image-detected (the CNN path), and the uint8
+    image key stays out of obs_rms (SB3 divides images by 255 internally).
+
+    RED form: the cv kwarg is consumed inside try/except TypeError so a
+    missing 04-08 constructor kwarg is a named failure, never an error."""
+    cv_state_dim = getattr(C, "OBS_STATE_CV_DIM", None)
+    if cv_state_dim is None:
+        pytest.fail(
+            "constants.OBS_STATE_CV_DIM is missing — RED: the 04-08 CV "
+            "observation contract is not pinned"
+        )
+    try:
+        raw = _vision_venv(grayscale=True, cv_features=True)
+    except TypeError as exc:
+        pytest.fail(
+            "SO100PickPlaceEnv has no cv_features kwarg — RED: the 04-08 "
+            f"CV observation contract does not exist (TypeError: {exc})"
+        )
+    norm = VecNormalize(
+        raw,
+        norm_obs_keys=[C.OBS_STATE_KEY],
+        norm_obs=True,
+        norm_reward=True,
+        gamma=C.REWARD_GAMMA,
+    )
+    stacked = ImageOnlyFrameStack(norm, n_stack=C.OBS_N_STACK)
+    chain = VecTransposeImage(stacked)
+
+    assert stacked.observation_space[C.OBS_STATE_KEY].shape == (cv_state_dim,)
+    assert stacked.observation_space[C.OBS_STATE_KEY].dtype == np.float32
+    assert stacked.observation_space[C.OBS_IMAGE_KEY].shape == (
+        C.OBS_IMAGE_SIZE,
+        C.OBS_IMAGE_SIZE,
+        1 * C.OBS_N_STACK,
+    )
+    # A7 on the CV chain: the stacked grayscale space is still image-detected.
+    assert is_image_space(stacked.observation_space[C.OBS_IMAGE_KEY])
+
+    obs = stacked.reset()
+    assert obs[C.OBS_STATE_KEY].shape == (2, cv_state_dim)
+    assert obs[C.OBS_STATE_KEY].dtype == np.float32
+    obs, _, dones, _ = stacked.step(np.tile(_ACTION, (2, 1)))
+    assert not dones.any()
+    assert obs[C.OBS_STATE_KEY].shape == (2, cv_state_dim)
+
+    # D-08 on the new contract: 32-dim state statistics, image key absent.
+    assert norm.obs_rms[C.OBS_STATE_KEY].mean.shape == (cv_state_dim,)
+    assert C.OBS_IMAGE_KEY not in norm.obs_rms
+    # The transposed chain presents the CNN-ready image shape.
+    assert chain.observation_space[C.OBS_IMAGE_KEY].shape == (
+        1 * C.OBS_N_STACK,
+        C.OBS_IMAGE_SIZE,
+        C.OBS_IMAGE_SIZE,
+    )
+
+
 def test_wrapper_rejects_bad_spaces():
     """Fail-loudly constructor contract: a non-Dict space or a missing image key raises ValueError naming the expected space."""
     flat_venv = make_vec_env(SO100PickPlaceEnv, n_envs=1, seed=0)

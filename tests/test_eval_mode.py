@@ -160,15 +160,32 @@ def test_eval_chain_mirrors_training_order():
     )
 
     # Env kwargs pin the OBS_DECISION format: vision Dict obs, 64x64
-    # grayscale (1-channel) uint8 image, 28-dim state key.
+    # grayscale (1-channel) uint8 image — and the 04-08 CV contract: the
+    # state key is the 32-dim CV layout (getattr-guarded RED form).
     obs_space = dummy.envs[0].unwrapped.observation_space
-    assert obs_space[C.OBS_STATE_KEY].shape == (C.OBS_STATE_DIM,)
+    cv_state_dim = getattr(C, "OBS_STATE_CV_DIM", None)
+    if cv_state_dim is None:
+        pytest.fail(
+            "constants.OBS_STATE_CV_DIM is missing — RED: the eval chain's "
+            "state-key shape assert cannot pin the 04-08 CV observation "
+            "contract"
+        )
+    assert obs_space[C.OBS_STATE_KEY].shape == (cv_state_dim,) == (32,)
     assert obs_space[C.OBS_IMAGE_KEY].shape == (
         C.OBS_IMAGE_SIZE,
         C.OBS_IMAGE_SIZE,
         1,
     )
     assert obs_space[C.OBS_IMAGE_KEY].dtype == np.uint8
+
+    # 04-08: build_eval_venv constructs the CV contract — the judged chains
+    # (training AND eval) share ONE 32-dim layout (T-04-25).
+    raw = dummy.envs[0].unwrapped
+    if getattr(raw, "_cv_features", None) is not True:
+        pytest.fail(
+            "build_eval_venv does not construct cv_features=True — RED: the "
+            "eval chain is off the 04-08 CV observation contract"
+        )
 
     # The gate's pinned action-space mode is applied around the raw env
     act_space = dummy.envs[0].action_space
