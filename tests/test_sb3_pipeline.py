@@ -222,23 +222,10 @@ def test_cv_chain_integration_rows():
     discipline on the 32-dim contract: the state key passes the stacker
     untouched at (n_envs, 32) float32, the stacked 4-channel grayscale
     image space is still SB3-image-detected (the CNN path), and the uint8
-    image key stays out of obs_rms (SB3 divides images by 255 internally).
-
-    RED form: the cv kwarg is consumed inside try/except TypeError so a
-    missing 04-08 constructor kwarg is a named failure, never an error."""
-    cv_state_dim = getattr(C, "OBS_STATE_CV_DIM", None)
-    if cv_state_dim is None:
-        pytest.fail(
-            "constants.OBS_STATE_CV_DIM is missing — RED: the 04-08 CV "
-            "observation contract is not pinned"
-        )
-    try:
-        raw = _vision_venv(grayscale=True, cv_features=True)
-    except TypeError as exc:
-        pytest.fail(
-            "SO100PickPlaceEnv has no cv_features kwarg — RED: the 04-08 "
-            f"CV observation contract does not exist (TypeError: {exc})"
-        )
+    image key stays out of obs_rms (SB3 divides images by 255 internally)."""
+    cv_state_dim = C.OBS_STATE_CV_DIM
+    assert cv_state_dim == 32
+    raw = _vision_venv(grayscale=True, cv_features=True)
     norm = VecNormalize(
         raw,
         norm_obs_keys=[C.OBS_STATE_KEY],

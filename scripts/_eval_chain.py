@@ -23,6 +23,12 @@ The frozen spawn grid is READ from so100rob.constants.SPAWN_SEEDS_PATH
 (the Phase 1 D-11 data file, moved into the package by the Phase 1 WR-03
 fix — config/spawn_seeds.json is the stale pre-move path) and never
 re-derived at runtime.
+
+OBS CONTRACT (04-08): build_eval_venv constructs cv_features=True — the
+32-dim CV state key (OBS_STATE_CV_DIM, the measured color-blob centroid
+tail at indices [28:32]) — mirroring train.resolve_env_kwargs so the two
+judged chains share ONE contract (T-04-25). A legacy 28-dim bundle load
+on this chain fails loudly at VecNormalize.load (shape mismatch).
 """
 
 from __future__ import annotations
@@ -157,6 +163,7 @@ def build_eval_venv(gate: dict, n_envs: int = 1):
             obs_mode=C.OBS_MODE_VISION,
             grayscale=GRAYSCALE,
             spawn_mode=EVAL_SPAWN_MODE,
+            cv_features=True,  # 04-08: the judged eval chain is on the CV contract (T-04-25)
         )
         # Monitor FIRST (training order), logging the RAW task return
         # below VecNormalize (04-RESEARCH Pattern 3).

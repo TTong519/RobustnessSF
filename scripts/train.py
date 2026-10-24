@@ -150,8 +150,11 @@ def resolve_gamma(gate: dict) -> float:
 
 def resolve_env_kwargs(gate: dict) -> dict:
     """Per-worker training env kwargs: the pinned 64x64-gray vision
-    observation, with spawn_mode from the gate (Pitfall 1: training envs
-    are continuous — the grid default would fix the cube at spawn 0)."""
+    observation with the 04-08 CV contract (cv_features=True — the
+    32-dim state key with the measured color-blob centroid tail; the
+    bundle's config.json records this kwarg), and spawn_mode from the
+    gate (Pitfall 1: training envs are continuous — the grid default
+    would fix the cube at spawn 0)."""
     return dict(
         obs_mode=C.OBS_MODE_VISION,
         render_mode="rgb_array",
@@ -159,6 +162,7 @@ def resolve_env_kwargs(gate: dict) -> dict:
         height=C.OBS_IMAGE_SIZE,
         grayscale=GRAYSCALE,
         spawn_mode=gate["spawn_mode"],
+        cv_features=True,  # 04-08: the judged training chain is on the CV contract
     )
 
 

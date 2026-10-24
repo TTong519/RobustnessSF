@@ -370,45 +370,22 @@ def test_obs_nonfinite_fails_loudly():
 
 
 def test_cv_observation_pins():
-    """04-08 tamper guards (getattr-guarded RED form): the observation
-    identity split is explicit — OBS_STATE_DIM stays 28 (the legacy/default
-    contract every Phase 1/2 runner consumes), OBS_CV_FEATURE_DIM == 4 and
-    OBS_STATE_CV_DIM == 28 + 4 == 32 name the opt-in CV training contract,
-    the probe-measured mask bounds are well-formed uint8 bounds, and the
-    pinned neutral is (0.5, 0.5)."""
+    """04-08 tamper guards: the observation identity split is explicit —
+    OBS_STATE_DIM stays 28 (the legacy/default contract every Phase 1/2
+    runner consumes), OBS_CV_FEATURE_DIM == 4 and OBS_STATE_CV_DIM ==
+    28 + 4 == 32 name the opt-in CV training contract, the probe-measured
+    mask bounds are well-formed uint8 bounds, and the pinned neutral is
+    (0.5, 0.5)."""
     assert C.OBS_STATE_DIM == 28  # the legacy pin, unchanged
-    cv_feature_dim = getattr(C, "OBS_CV_FEATURE_DIM", None)
-    if cv_feature_dim is None:
-        pytest.fail(
-            "constants.OBS_CV_FEATURE_DIM is missing — RED: the 04-08 CV "
-            "observation contract is not pinned"
-        )
-    cv_state_dim = getattr(C, "OBS_STATE_CV_DIM", None)
-    if cv_state_dim is None:
-        pytest.fail(
-            "constants.OBS_STATE_CV_DIM is missing — RED: the 04-08 CV "
-            "observation contract is not pinned"
-        )
-    assert cv_feature_dim == 4
-    assert cv_state_dim == 32 == C.OBS_STATE_DIM + cv_feature_dim
+    assert C.OBS_CV_FEATURE_DIM == 4
+    assert C.OBS_STATE_CV_DIM == 32 == C.OBS_STATE_DIM + C.OBS_CV_FEATURE_DIM
 
     for lo_name, hi_name in (
         ("CV_CUBE_RGB_LO", "CV_CUBE_RGB_HI"),
         ("CV_GOAL_RGB_LO", "CV_GOAL_RGB_HI"),
     ):
-        lo = getattr(C, lo_name, None)
-        hi = getattr(C, hi_name, None)
-        if lo is None or hi is None:
-            pytest.fail(
-                f"constants.{lo_name}/{hi_name} missing — RED: the 04-08 "
-                "probe-measured mask bounds are not pinned"
-            )
+        lo = getattr(C, lo_name)
+        hi = getattr(C, hi_name)
         assert all(l <= h for l, h in zip(lo, hi)), (lo_name, hi_name)
         assert all(0 <= v <= 255 for v in list(lo) + list(hi))
-    missing_uv = getattr(C, "CV_BLOB_MISSING_UV", None)
-    if missing_uv is None:
-        pytest.fail(
-            "constants.CV_BLOB_MISSING_UV is missing — RED: the 04-08 "
-            "empty-mask neutral is not pinned"
-        )
-    assert missing_uv == (0.5, 0.5)
+    assert C.CV_BLOB_MISSING_UV == (0.5, 0.5)

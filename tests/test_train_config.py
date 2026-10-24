@@ -94,13 +94,8 @@ def test_resolved_config_matches_gate_and_constants():
     # OBS_DECISION D-05: vision-64x64-gray is the decided format.
     assert cfg["env_kwargs"]["grayscale"] is True
     # 04-08: the training env kwargs construct the CV observation contract
-    # (getattr-style RED guard — a missing kwarg is a named failure).
-    if cfg["env_kwargs"].get("cv_features") is not True:
-        pytest.fail(
-            "resolve_env_kwargs lacks cv_features=True — RED: the training "
-            "chain is off the 04-08 CV observation contract (the state key "
-            "must grow to OBS_STATE_CV_DIM=32 for training)"
-        )
+    # (the judged training chain is on the 32-dim CV state key).
+    assert cfg["env_kwargs"]["cv_features"] is True
 
     # The seed comes from the gate and is recorded in the resolved config.
     assert cfg["seed"] == gate["tuning"]["seed"] == 0

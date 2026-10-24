@@ -258,10 +258,61 @@ OBS_N_STACK: int = 4
 #   [16:22] cube qvel (6D linear + angular)              D-03
 #   [22:25] gripper-pad-midpoint -> cube 3D offset       D-02
 #   [25:28] cube -> goal 3D offset                       D-02
+# IDENTITY SPLIT (04-08): OBS_STATE_DIM=28 is the LEGACY/DEFAULT
+# contract — every Phase 1/2 runner (benchmark, reward audit, physics
+# gate) and the smoke runner construct it unchanged and their measured
+# numbers stay reproducible. The CV family pinned below is OPT-IN
+# (cv_features=True); the two judged Phase 4 chains (training +
+# eval/audit) construct the CV layout, and a cross-layout bundle load
+# fails loudly (VecNormalize shape mismatch) — the 04-05/04-06/04-07
+# failed-baseline bundles were never reference points.
 # COSTLY to change: VecNormalize statistics, PPO feature extractors, and
-# every Phase 4/6 checkpoint consume this layout; changing it after training
+# every Phase 4/6 checkpoint consume a layout; changing it after training
 # starts invalidates checkpoints.
 OBS_STATE_DIM: int = 28
+
+# --- Classical-CV color-blob centroid pins (04-08 pre-agreement) ---
+# The user's third D-03 decision, made 2026-10-23: ranked option 2 in
+# runs/investigation-04-zclause.md section 5 — the classical-CV feature
+# track, the held Phase 3 revisit unheld BY that decision (mechanism per
+# runs/investigation-04-cve-groundwork.md). The CV observation contract:
+# SO100PickPlaceEnv(cv_features=True) (requires obs_mode='vision')
+# appends a 4-dim MEASURED-centroid tail to the state key —
+#   [28:30] cube centroid (u, v)   [30:32] goal centroid (u, v)
+# with u = mean_col/(W-1), v = mean_row/(H-1) in [0, 1] — computed by
+# so100rob.cv_features as a PURE-numpy function of the rendered RGB frame
+# ONLY (T-04-23: never simulator state), from the SAME single render the
+# image key uses (one render per step, extracted before the grayscale
+# conversion). Phase 5's sensor-noise wrapper consumes this 32-dim layout.
+OBS_CV_FEATURE_DIM: int = 4
+# The training-contract pin (the state-key dimensionality the judged
+# chains construct). C-sum form on purpose: the identity
+# OBS_STATE_CV_DIM == OBS_STATE_DIM + OBS_CV_FEATURE_DIM is the
+# tamper-guard contract.
+OBS_STATE_CV_DIM: int = OBS_STATE_DIM + OBS_CV_FEATURE_DIM  # == 32
+
+# Probe-measured per-channel uint8 mask bounds (probe-before-pin, the
+# 04-07 discipline): scripts/probe_cv_features.py rendered the real env
+# at all 25 frozen spawns and classified the CHANGING palette (the moving
+# cube) against the STATIC palette (floor/arm/goal); these bounds are the
+# per-channel box over the cube family — changing colors with R > G > B
+# and R >= 2*B (the pinned cube geom rgba 0.9 0.6 0.1 channel prior) — and
+# the goal family — static R-dominant colors (the pinned goal-site rgba
+# (1, 0, 0) prior). Artifact pattern runs/cv_probe/<ts>/probe.json; the
+# 04-08 run (runs/cv_probe/20261023T230939Z) measured: cube mask counts
+# 8..13 px/spawn, affine fit max residual 0.276 px, goal 3 px on every
+# frame, goal centroid std 0.0 px, zero static colors inside the cube box.
+# Closed per-channel thresholds on raw uint8 — exact, no tolerance;
+# anti-aliased edge pixels are deterministically excluded.
+CV_CUBE_RGB_LO: tuple[int, int, int] = (80, 66, 14)
+CV_CUBE_RGB_HI: tuple[int, int, int] = (255, 217, 55)
+CV_GOAL_RGB_LO: tuple[int, int, int] = (69, 17, 22)
+CV_GOAL_RGB_HI: tuple[int, int, int] = (224, 38, 51)
+
+# The pinned neutral for an EMPTY mask (T-04-26): never NaN, never a
+# raise — an undefined blob reads as frame-center and the env's finite
+# guard covers the tail.
+CV_BLOB_MISSING_UV: tuple[float, float] = (0.5, 0.5)
 
 # Rec.601 luma weights for the grayscale image conversion (D-05 gray
 # candidate) — mirrors scripts/benchmark.py's _LUMA so the env-side

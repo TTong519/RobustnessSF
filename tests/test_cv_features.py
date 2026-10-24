@@ -8,10 +8,11 @@ section 5; mechanism per runs/investigation-04-cve-groundwork.md):
     exactness (the endpoint contract u = mean_col/(W-1), v =
     mean_row/(H-1); the pinned neutral for an empty mask; exact closed
     uint8 threshold semantics) and the PURITY contract (T-04-23: a pure
-    function of the rendered RGB frame — the module can import neither the
-    physics bindings nor any env module, so the perception path cannot read
-    simulator state even by accident; the state vector already carries the
-    TRUE cube pose, so a privileged centroid would test nothing);
+    function of the rendered RGB frame — the module can import neither
+    the physics bindings nor any env module, so the perception path
+    cannot read simulator state even by accident; the state vector
+    already carries the TRUE cube pose, so a privileged centroid would
+    test nothing);
   * the env contract (SO100PickPlaceEnv(cv_features=True) requires vision
     mode, grows the state key 28 -> 32 with the 4-dim centroid tail, and
     leaves the legacy 28-dim default/state/vision contracts untouched);
@@ -30,12 +31,10 @@ section 5; mechanism per runs/investigation-04-cve-groundwork.md):
     _eval_chain.build_eval_venv both construct cv_features=True — T-04-25:
     the two chains that judge the baseline share one contract).
 
-RED contract (#3770, the established missing-artifact pattern): every test
-that consumes a not-yet-existing artifact converts its absence into an
-in-body NAMED failure — the module import, the constants read (getattr
-with a failing default), and the env kwarg construction (try/except
-TypeError) all pytest.fail citing the 04-08 contract; nothing fails as a
-collection or import error.
+RED history: committed as 40650c3 in guarded RED form (every missing
+artifact converted to an in-body named failure); un-guarded into these
+real assertions by the GREEN commit. RED evidence machine-validated:
+.planning/red-evidence-04-08-t1.json (17/17 named failures).
 
 GL discipline (WR-01, suite-wide): vision envs are NEVER closed
 mid-process (gymnasium 1.3.0's OffScreenViewer.close() terminates
@@ -44,6 +43,7 @@ process-global GLFW state); only renderer-less state-mode envs are closed.
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -53,42 +53,13 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize, VecTransposeImage
 
 from so100rob import constants as C
+from so100rob import cv_features as cvf
 from so100rob.envs.pick_place_env import SO100PickPlaceEnv
 from so100rob.vec_wrappers import ImageOnlyFrameStack
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 CV_SRC = REPO_ROOT / "src" / "so100rob" / "cv_features.py"
-
-
-# ---------------------------------------------------------------------------
-# RED-safe artifact loaders (named failures, never collection errors)
-# ---------------------------------------------------------------------------
-
-
-def _cv_features():
-    """Import so100rob.cv_features — the 04-08 pure-perception module."""
-    try:
-        import so100rob.cv_features as cvf
-
-        return cvf
-    except ImportError as exc:
-        pytest.fail(
-            "so100rob.cv_features does not exist yet — RED: the pure "
-            "color-blob centroid module is the missing 04-08 artifact "
-            f"(ImportError: {exc})"
-        )
-
-
-def _pin(name: str):
-    """Read a 04-08 observation constant — getattr with a failing default."""
-    value = getattr(C, name, None)
-    if value is None:
-        pytest.fail(
-            f"constants.{name} is missing — RED: the 04-08 CV observation "
-            "contract is not pinned in the observation block"
-        )
-    return value
 
 
 def _cv_env_kwargs(**overrides) -> dict:
@@ -106,35 +77,19 @@ def _cv_env_kwargs(**overrides) -> dict:
 
 
 def _make_cv_env(**overrides):
-    """Construct the CV-mode env — TypeError converts to a named failure."""
-    try:
-        return SO100PickPlaceEnv(**_cv_env_kwargs(**overrides))
-    except TypeError as exc:
-        pytest.fail(
-            "SO100PickPlaceEnv has no cv_features kwarg — RED: the 04-08 "
-            "CV observation contract does not exist in the env constructor "
-            f"(TypeError: {exc})"
-        )
+    return SO100PickPlaceEnv(**_cv_env_kwargs(**overrides))
 
 
 def _make_cv_venv(n_envs: int = 2):
     """A CV-mode vision vec-env (the hardened construction's env_kwargs)."""
-    try:
-        return make_vec_env(
-            SO100PickPlaceEnv, n_envs=n_envs, seed=0, env_kwargs=_cv_env_kwargs()
-        )
-    except TypeError as exc:
-        pytest.fail(
-            "SO100PickPlaceEnv has no cv_features kwarg — RED: the 04-08 "
-            "CV observation contract does not exist (the vec-env factory "
-            f"raised TypeError: {exc})"
-        )
+    return make_vec_env(
+        SO100PickPlaceEnv, n_envs=n_envs, seed=0, env_kwargs=_cv_env_kwargs()
+    )
 
 
 def _load_train():
     path = SCRIPTS_DIR / "train.py"
-    if not path.exists():
-        pytest.fail("scripts/train.py does not exist")
+    assert path.exists()
     spec = importlib.util.spec_from_file_location("so100rob_train_runner_0408", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -142,10 +97,6 @@ def _load_train():
 
 
 def _load_eval_chain():
-    if not (SCRIPTS_DIR / "_eval_chain.py").exists():
-        pytest.fail("scripts/_eval_chain.py does not exist")
-    import sys
-
     if str(SCRIPTS_DIR) not in sys.path:
         sys.path.insert(0, str(SCRIPTS_DIR))
     import _eval_chain as ec
@@ -164,10 +115,9 @@ def test_extract_centroids_synthetic_frames():
     empty mask gives the pinned neutral CV_BLOB_MISSING_UV (never NaN,
     never a raise); a pixel one step OUTSIDE a pinned bound is excluded
     (exact closed uint8 thresholds, no tolerance)."""
-    cvf = _cv_features()
     H = W = 16
     # Colors INSIDE the probe-measured pinned bounds (probe artifact
-    # runs/cv_probe/<ts>/probe.json: cube (80,66,14)-(255,217,55),
+    # runs/cv_probe/20261023T230939Z/probe.json: cube (80,66,14)-(255,217,55),
     # goal (69,17,22)-(224,38,51)) on a zero background (outside both).
     cube_color = (200, 150, 40)
     goal_color = (220, 30, 40)
@@ -202,7 +152,7 @@ def test_extract_centroids_synthetic_frames():
 
     # An empty cube region gives the pinned neutral for the cube channels
     # — no NaN, no raise (the finite guard covers the tail downstream).
-    missing = _pin("CV_BLOB_MISSING_UV")
+    missing = C.CV_BLOB_MISSING_UV
     assert missing == (0.5, 0.5)
     only_goal = np.zeros((H, W, 3), dtype=np.uint8)
     only_goal[8, 8] = goal_color
@@ -213,7 +163,7 @@ def test_extract_centroids_synthetic_frames():
 
     # Exact uint8 threshold semantics: one step outside a pinned bound is
     # EXCLUDED — no tolerance, anti-aliased edges are deterministic.
-    cube_hi = _pin("CV_CUBE_RGB_HI")
+    cube_hi = C.CV_CUBE_RGB_HI
     just_out_hi = list(cube_color)
     just_out_hi[2] = int(cube_hi[2]) + 1  # B one above the pinned hi
     frame_out = np.zeros((H, W, 3), dtype=np.uint8)
@@ -223,7 +173,7 @@ def test_extract_centroids_synthetic_frames():
         "a pixel one step outside the pinned cube hi bound must fall "
         "outside the mask (exact closed thresholds)"
     )
-    cube_lo = _pin("CV_CUBE_RGB_LO")
+    cube_lo = C.CV_CUBE_RGB_LO
     just_below_lo = list(cube_color)
     just_below_lo[0] = int(cube_lo[0]) - 1  # R one below the pinned lo
     frame_out = np.zeros((H, W, 3), dtype=np.uint8)
@@ -236,7 +186,6 @@ def test_blob_centroid_and_masks_pure_contracts():
     """cube_mask/goal_mask are per-channel boolean tests of the pinned
     bounds; blob_centroid returns float64 (u, v) normalized by (W-1)/(H-1),
     with the pinned neutral on an empty mask."""
-    cvf = _cv_features()
     H = W = 8
     frame = np.zeros((H, W, 3), dtype=np.uint8)
     frame[2, 5] = (200, 150, 40)  # inside the cube bounds only
@@ -266,14 +215,9 @@ def test_cv_features_purity_source_scan():
     a structural source scan asserts the module imports neither the
     physics bindings, any env module, nor the scripted policy; a privileged
     centroid would silently turn the perception experiment into a tautology."""
-    _cv_features()  # RED: the module must exist
-    if not CV_SRC.exists():
-        pytest.fail(f"{CV_SRC} does not exist — RED: the 04-08 module is missing")
     src = CV_SRC.read_text()
     assert "import mujoco" not in src, "cv_features must not import the physics bindings"
-    assert "mujoco" not in src.replace("import mujoco", ""), (
-        "cv_features must not reference the physics bindings at all"
-    )
+    assert "mujoco" not in src, "cv_features must not reference the physics bindings at all"
     assert "so100rob.envs" not in src, "cv_features must not import any env module"
     assert "scripted_policy" not in src, "cv_features must not import the scripted policy"
     # numpy-only (T-04-SC): no new perception dependency was added.
@@ -286,7 +230,6 @@ def test_extract_centroids_needs_no_env():
     no env in scope and computes from the frame alone — the probe's affine
     bar is the evidence the mask tracks the RENDERED cube, and this test is
     the evidence the value cannot come from anywhere but the frame."""
-    cvf = _cv_features()
     frame = np.zeros((16, 16, 3), dtype=np.uint8)
     frame[3, 7] = (220, 30, 40)  # goal-bounds color only
     out = cvf.extract_centroids(frame)
@@ -308,8 +251,8 @@ def test_env_cv_contract():
     DEFAULT construction still emits the flat (28,) Box and the legacy
     vision mode still emits the 28-dim state key (the legacy contract is
     untouched)."""
-    cv_dim = _pin("OBS_STATE_CV_DIM")
-    assert cv_dim == 32 == C.OBS_STATE_DIM + _pin("OBS_CV_FEATURE_DIM")
+    cv_dim = C.OBS_STATE_CV_DIM
+    assert cv_dim == 32 == C.OBS_STATE_DIM + C.OBS_CV_FEATURE_DIM
 
     env = _make_cv_env()
     space = env.observation_space
@@ -369,7 +312,7 @@ def test_cv_tail_lives_on_the_state_key():
     obs, _ = env.reset(seed=0)
     assert set(obs.keys()) == {C.OBS_STATE_KEY, C.OBS_IMAGE_KEY}
     state = obs[C.OBS_STATE_KEY]
-    assert state.shape == (_pin("OBS_STATE_CV_DIM"),)
+    assert state.shape == (C.OBS_STATE_CV_DIM,)
     # The tail channels are the measured centroids in [0, 1] (or the
     # neutral (0.5, 0.5) on an empty mask) — never NaN/Inf.
     tail = state[C.OBS_STATE_DIM :]
@@ -394,7 +337,7 @@ def test_cv_prefix_identity():
         cv_obs, _ = cv_env.reset(seed=123)
         assert s_obs.shape == (C.OBS_STATE_DIM,)
         state_key = cv_obs[C.OBS_STATE_KEY]
-        assert state_key.shape == (_pin("OBS_STATE_CV_DIM"),)
+        assert state_key.shape == (C.OBS_STATE_CV_DIM,)
         np.testing.assert_array_equal(
             s_obs, state_key[: C.OBS_STATE_DIM],
             err_msg="the first 28 dims must be bit-identical across the "
@@ -415,21 +358,9 @@ def test_cv_features_requires_vision_mode():
     ValueError naming vision — the existing fail-fast construction
     pattern; a silent cv_features=True on the flat state Box would emit a
     28-dim obs under a 32-dim contract."""
-    raised = None
-    try:
+    with pytest.raises(ValueError, match="vision") as excinfo:
         SO100PickPlaceEnv(cv_features=True)
-    except TypeError as exc:
-        pytest.fail(
-            "SO100PickPlaceEnv has no cv_features kwarg — RED: the 04-08 "
-            f"CV observation contract does not exist (TypeError: {exc})"
-        )
-    except ValueError as exc:
-        raised = exc
-    assert raised is not None, (
-        "cv_features=True with obs_mode='state' must raise ValueError "
-        "naming vision (the 04-08 fail-loudly contract)"
-    )
-    assert "vision" in str(raised)
+    assert "obs_mode" in str(excinfo.value) or "vision" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +382,7 @@ def test_cv_chain_shape():
         gamma=C.REWARD_GAMMA,
     )
     chain = VecTransposeImage(ImageOnlyFrameStack(norm, n_stack=C.OBS_N_STACK))
-    cv_dim = _pin("OBS_STATE_CV_DIM")
+    cv_dim = C.OBS_STATE_CV_DIM
 
     obs = chain.reset()
     assert obs[C.OBS_STATE_KEY].shape == (2, cv_dim)
@@ -511,15 +442,12 @@ def test_cross_layout_bundle_load_fails_loudly(tmp_path):
         ),
     )
     assert legacy_venv.observation_space[C.OBS_STATE_KEY].shape == (C.OBS_STATE_DIM,)
-    raised = None
-    try:
+    # SB3 2.9.0's check_shape_equal fails via AssertionError (a bare
+    # assert in utils.py) naming both shapes — loud at LOAD time, which is
+    # the contract (the failed-baseline bundles can never silently load).
+    with pytest.raises(AssertionError, match="same shape") as excinfo:
         VecNormalize.load(str(stats_path), legacy_venv)
-    except (ValueError, AssertionError) as exc:
-        raised = exc
-    assert raised is not None, (
-        "a 32-dim VecNormalize load onto a legacy 28-dim venv must fail "
-        "loudly (shape mismatch) — no silent cross-layout measurement"
-    )
+    assert "(32,)" in str(excinfo.value) and "(28,)" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -534,20 +462,19 @@ def test_cv_constants_tamper_guards():
     CV_BLOB_MISSING_UV == (0.5, 0.5); and the 04-07 grasp predicate pins
     are untouched (the CV track is an OBSERVATION change only)."""
     assert C.OBS_STATE_DIM == 28  # the legacy/default contract, unchanged
-    assert _pin("OBS_CV_FEATURE_DIM") == 4
-    cv_dim = _pin("OBS_STATE_CV_DIM")
-    assert cv_dim == 32 == C.OBS_STATE_DIM + _pin("OBS_CV_FEATURE_DIM")
+    assert C.OBS_CV_FEATURE_DIM == 4
+    assert C.OBS_STATE_CV_DIM == 32 == C.OBS_STATE_DIM + C.OBS_CV_FEATURE_DIM
 
     for lo_name, hi_name in (
         ("CV_CUBE_RGB_LO", "CV_CUBE_RGB_HI"),
         ("CV_GOAL_RGB_LO", "CV_GOAL_RGB_HI"),
     ):
-        lo, hi = _pin(lo_name), _pin(hi_name)
+        lo, hi = getattr(C, lo_name), getattr(C, hi_name)
         assert len(lo) == 3 and len(hi) == 3
         assert all(isinstance(v, int) for v in list(lo) + list(hi))
         assert all(l <= h for l, h in zip(lo, hi)), (lo_name, hi_name)
         assert all(0 <= v <= 255 for v in list(lo) + list(hi))
-    assert _pin("CV_BLOB_MISSING_UV") == (0.5, 0.5)
+    assert C.CV_BLOB_MISSING_UV == (0.5, 0.5)
 
     # The frozen 04-07 predicate (the CV track changes observation only).
     assert C.GRASP_CUBE_OFF_FLOOR_Z_M == 0.017
@@ -560,16 +487,15 @@ def test_cv_bounds_match_probe_artifact():
     the constants must equal the runs/cv_probe/<ts>/probe.json values this
     plan measured — a post-hoc edit invalidates the pin)."""
     probe_paths = sorted((REPO_ROOT / "runs" / "cv_probe").glob("*/probe.json"))
-    if not probe_paths:
-        pytest.fail(
-            "runs/cv_probe/<ts>/probe.json is missing — the mask bounds "
-            "must be probe-measured, never guessed (04-08 probe-before-pin)"
-        )
+    assert probe_paths, (
+        "runs/cv_probe/<ts>/probe.json is missing — the mask bounds must "
+        "be probe-measured, never guessed (04-08 probe-before-pin)"
+    )
     probe = json.loads(probe_paths[-1].read_text())
-    assert list(_pin("CV_CUBE_RGB_LO")) == probe["cube_rgb_lo"]
-    assert list(_pin("CV_CUBE_RGB_HI")) == probe["cube_rgb_hi"]
-    assert list(_pin("CV_GOAL_RGB_LO")) == probe["goal_rgb_lo"]
-    assert list(_pin("CV_GOAL_RGB_HI")) == probe["goal_rgb_hi"]
+    assert list(C.CV_CUBE_RGB_LO) == probe["cube_rgb_lo"]
+    assert list(C.CV_CUBE_RGB_HI) == probe["cube_rgb_hi"]
+    assert list(C.CV_GOAL_RGB_LO) == probe["goal_rgb_lo"]
+    assert list(C.CV_GOAL_RGB_HI) == probe["goal_rgb_hi"]
 
 
 # ---------------------------------------------------------------------------
@@ -586,21 +512,17 @@ def test_judged_chains_share_the_cv_contract():
     train = _load_train()
     gate = train.load_gate()
     kwargs = train.resolve_env_kwargs(gate)
-    if kwargs.get("cv_features") is not True:
-        pytest.fail(
-            "train.resolve_env_kwargs does not construct cv_features=True "
-            "— the TRAINING chain is off the 04-08 CV observation contract"
-        )
+    assert kwargs["cv_features"] is True, (
+        "train.resolve_env_kwargs must construct cv_features=True — the "
+        "TRAINING chain is on the 04-08 CV observation contract"
+    )
 
     ec = _load_eval_chain()
     eval_venv = ec.build_eval_venv(gate)
     raw = eval_venv.envs[0].unwrapped
-    if getattr(raw, "_cv_features", None) is not True:
-        pytest.fail(
-            "build_eval_venv does not construct cv_features=True — the "
-            "EVAL chain is off the 04-08 CV observation contract"
-        )
-    assert raw.observation_space[C.OBS_STATE_KEY].shape == (
-        _pin("OBS_STATE_CV_DIM"),
+    assert raw._cv_features is True, (
+        "build_eval_venv must construct cv_features=True — the EVAL chain "
+        "is on the 04-08 CV observation contract"
     )
+    assert raw.observation_space[C.OBS_STATE_KEY].shape == (C.OBS_STATE_CV_DIM,)
     # WR-01: the eval vision env is never closed mid-process.

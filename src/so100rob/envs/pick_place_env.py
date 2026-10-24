@@ -17,7 +17,15 @@ upstream SO-ARM100 model). Scope after Phase 2:
     (D-12) state mode emits a flat float32 Box with the pinned 28-dim
     D-01/D-02/D-03 state vector; opt-in obs_mode="vision" (requires
     render_mode="rgb_array") emits a spaces.Dict{state, image} with a
-    raw uint8 channel-last 64x64 image key (grayscale optional)
+    raw uint8 channel-last 64x64 image key (grayscale optional).
+    The 04-08 CV contract (cv_features=True, requires vision mode)
+    appends a 4-dim MEASURED color-blob centroid tail to the state key,
+    growing it 28 -> 32 (OBS_STATE_CV_DIM): the tail is a pure-numpy
+    function of the rendered RGB frame (so100rob.cv_features, T-04-23
+    — never simulator state), computed from the SAME single render the
+    image key uses. The legacy 28-dim default/state/vision contracts
+    are unchanged (the identity split: OBS_STATE_DIM=28 is the
+    legacy/default pin, OBS_STATE_CV_DIM=32 the opt-in training pin).
 
 The control update rate is the constructor-time frame_skip (ENV-04): the
 physics timestep is pinned in the scene (0.002 s) and a "rate change" is
@@ -34,6 +42,7 @@ from gymnasium import spaces
 from gymnasium.envs.mujoco import MujocoEnv
 
 from so100rob import constants as C
+from so100rob import cv_features
 from so100rob import reward
 from so100rob import stages
 from so100rob.scripted_policy import grasp_point
@@ -115,6 +124,7 @@ class SO100PickPlaceEnv(MujocoEnv):
         episode_sim_seconds: float = C.EPISODE_SIM_SECONDS,
         obs_mode: str = C.OBS_MODE_STATE,
         grayscale: bool = False,
+        cv_features: bool = False,
     ) -> None:
         # Spawn mode + obs mode validation BEFORE the (slow) model compile:
         # a malformed frozen-data file or a bad obs_mode fails fast and
@@ -134,9 +144,20 @@ class SO100PickPlaceEnv(MujocoEnv):
                 f"(got render_mode={render_mode!r}) — the image observation "
                 "is rendered through the env's offscreen renderer"
             )
+        # 04-08 CV contract: the color-blob centroid tail is extracted from
+        # the RENDERED frame — a vision-only construction (the same
+        # fail-fast pattern as the obs_mode validation above).
+        if cv_features and obs_mode != C.OBS_MODE_VISION:
+            raise ValueError(
+                "cv_features=True requires obs_mode='vision' "
+                f"(got obs_mode={obs_mode!r}) — the color-blob centroid "
+                "tail is measured from the rendered RGB frame (the 04-08 "
+                "CV observation contract)"
+            )
         self.spawn_mode = spawn_mode
         self._obs_mode = obs_mode
         self._grayscale = grayscale
+        self._cv_features = cv_features
         if spawn_mode == "grid":
             self.spawn_seeds_path = (
                 Path(spawn_seeds_path) if spawn_seeds_path is not None else C.SPAWN_SEEDS_PATH
@@ -148,9 +169,12 @@ class SO100PickPlaceEnv(MujocoEnv):
         # The DEFAULT stays flat-state (D-12): scripts/benchmark.py,
         # run_reward_audit.py, and run_physics_gate.py construct the env
         # with no obs_mode, so their Phase 1/2 measured numbers stay
-        # reproducible; vision is opt-in.
+        # reproducible; vision is opt-in. The 04-08 CV contract
+        # (cv_features=True) grows the state key to OBS_STATE_CV_DIM (32)
+        # with the measured color-blob centroid tail at indices [28:32].
+        _state_dim = C.OBS_STATE_CV_DIM if cv_features else C.OBS_STATE_DIM
         _state_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(C.OBS_STATE_DIM,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(_state_dim,), dtype=np.float32
         )
         if obs_mode == C.OBS_MODE_VISION:
             _n_channels = 1 if grayscale else 3
@@ -346,6 +370,26 @@ class SO100PickPlaceEnv(MujocoEnv):
         # observations by 255 internally, so pre-normalizing here would
         # double-normalize and silently ruin learning (Pitfall 9).
         frame = np.ascontiguousarray(self.render())
+        if self._cv_features:
+            # 04-08 CV contract: the 4-dim measured color-blob centroid
+            # tail, extracted from the SAME rendered frame (ONE render
+            # per step — no second render, no new GL exposure) BEFORE the
+            # grayscale conversion consumes it below. A pure-numpy
+            # function of the raw RGB frame only (T-04-23 — never
+            # simulator state; the state vector already carries the true
+            # cube pose, so a privileged centroid would test nothing).
+            cv_tail = cv_features.extract_centroids(frame)
+            # T-04-26: an explicit raise, NOT a bare assert (python -O
+            # strips asserts) — an undefined centroid must never poison
+            # the observation (empty masks yield the pinned neutral, so
+            # this guard is the belt-and-braces contract).
+            if not np.isfinite(cv_tail).all():
+                raise ValueError(
+                    "non-finite CV centroid tail in the observation — the "
+                    "measured color-blob features must fail loudly, never "
+                    "poison the observation (T-04-26)"
+                )
+            state = np.concatenate([state, cv_tail])
         if self._grayscale:
             # Rec.601 luma (same weights as scripts/benchmark.py's timed
             # conversion). The trailing channel is KEPT — a squeezed (H, W)
