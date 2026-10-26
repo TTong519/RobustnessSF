@@ -256,6 +256,34 @@ def test_audit_bounds_derivation():
     assert "2.5" in doc_dump
     assert "6.0" in doc_dump
 
+    # --- The 04-09 re-derivation rows (approach-gradient strengthening) ---
+    # The two changed constants are pinned by name (the 04-09 pre-agreement:
+    # the user's ranked-option-4 decision, made 2026-10-24 with the cvtrack
+    # addendum's least-indicated ranking in full view and overridden).
+    assert C.APPROACH_W == 0.15
+    assert C.APPROACH_POTENTIAL_SCALE_M == 0.10
+    # The strengthened sub-term cannot breach the no-success bound's
+    # derivation: the best ANY un-placed Phi can reach is the max stage
+    # potential plus the full sub-term, which must stay below the dense
+    # ceiling the no-success bound is built on. 1.0 + 0.15 = 1.15 < 2.0.
+    assert max(C.STAGE_POTENTIALS) + C.APPROACH_W == pytest.approx(1.15)
+    assert max(C.STAGE_POTENTIALS) + C.APPROACH_W < dense_ceiling, (
+        f"max(STAGE_POTENTIALS) + APPROACH_W = "
+        f"{max(C.STAGE_POTENTIALS) + C.APPROACH_W} must stay < the "
+        f"{dense_ceiling} dense ceiling — the strengthened sub-term cannot "
+        "breach the no-success bound's derivation"
+    )
+    # The gate's audit fields still equal the re-derived values: the 04-09
+    # change moved ONLY the two approach constants, none of the arithmetic
+    # inputs (TERMINAL_PLACE_BONUS / TIME_PENALTY /
+    # FULL_FLAGS_NO_PLACE_MAX_FRACTION / the 200-step horizon) — the 2.5/6.0
+    # bounds survive because the arithmetic yields them, never by assumption.
+    assert gate["audit_no_success_return_max"] == 2.5
+    assert gate["audit_success_return_min"] == 6.0
+    assert gate["audit_success_return_min"] == pytest.approx(
+        computed_success_min, abs=1e-9
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test 6: boundary records (the audit runner's comparison operators)

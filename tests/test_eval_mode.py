@@ -160,10 +160,11 @@ def test_eval_chain_mirrors_training_order():
     )
 
     # Env kwargs pin the OBS_DECISION format: vision Dict obs, 64x64
-    # grayscale (1-channel) uint8 image — and the 04-08 CV contract: the
-    # state key is the 32-dim CV layout.
+    # grayscale (1-channel) uint8 image — and the 04-09 retirement: the
+    # state key is the legacy 28-dim CNN-only layout (the 04-08 CV tail is
+    # retired by evidence; the judged chains construct NO CV entry).
     obs_space = dummy.envs[0].unwrapped.observation_space
-    assert obs_space[C.OBS_STATE_KEY].shape == (C.OBS_STATE_CV_DIM,) == (32,)
+    assert obs_space[C.OBS_STATE_KEY].shape == (C.OBS_STATE_DIM,) == (28,)
     assert obs_space[C.OBS_IMAGE_KEY].shape == (
         C.OBS_IMAGE_SIZE,
         C.OBS_IMAGE_SIZE,
@@ -171,10 +172,11 @@ def test_eval_chain_mirrors_training_order():
     )
     assert obs_space[C.OBS_IMAGE_KEY].dtype == np.uint8
 
-    # 04-08: build_eval_venv constructs the CV contract — the judged chains
-    # (training AND eval) share ONE 32-dim layout (T-04-25).
+    # 04-09 retirement: build_eval_venv constructs the CNN-only 28-dim
+    # contract — the judged chains (training AND eval) share the legacy
+    # layout (the flipped T-04-25 pin).
     raw = dummy.envs[0].unwrapped
-    assert raw._cv_features is True
+    assert raw._cv_features is False
 
     # The gate's pinned action-space mode is applied around the raw env
     act_space = dummy.envs[0].action_space

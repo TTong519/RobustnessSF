@@ -136,6 +136,93 @@ def test_terminal_dominance_bounds():
 
 
 # ---------------------------------------------------------------------------
+# The 04-09 pre-agreement pins (approach-gradient strengthening)
+# ---------------------------------------------------------------------------
+
+
+def test_04_09_approach_gradient_pins():
+    """The user's fourth D-03 decision (2026-10-24, ranked option 4 in
+    runs/investigation-04-cvtrack.md section 5 — WITH that addendum's own
+    least-indicated caveat in full view, overridden by the user; the change
+    is the user's deliberate reward-structure choice, never narrated as
+    evidence-indicated): APPROACH_W 0.05 -> 0.15 and
+    APPROACH_POTENTIAL_SCALE_M 0.20 -> 0.10 are the ONLY reward-structure
+    change — gradient 0.25 -> 1.5 Phi/m, so a representative 1-cm-per-control-
+    step approach move nets 0.015 - 0.01 = +0.005 per step against the
+    TIME_PENALTY (previously -0.0075: sustained reaching was locally
+    penalized until a discrete flag flipped, matching the diagnosed no-progress
+    failures); the ramp concentrates on the 0-10 cm home-to-cube band. Every
+    other frozen constant is pinned byte-identical here: STAGE_POTENTIALS,
+    TERMINAL_PLACE_BONUS, TIME_PENALTY, REWARD_GAMMA, and the 04-07 grasp
+    predicate."""
+    # The two 04-09 pins.
+    assert C.APPROACH_W == 0.15, (
+        f"APPROACH_W drifted to {C.APPROACH_W!r} — the 04-09 pre-agreement "
+        "pins 0.15 (approach-gradient strengthening)"
+    )
+    assert C.APPROACH_POTENTIAL_SCALE_M == 0.10, (
+        f"APPROACH_POTENTIAL_SCALE_M drifted to {C.APPROACH_POTENTIAL_SCALE_M!r} "
+        "— the 04-09 pre-agreement pins 0.10 (the 0-10 cm ramp band)"
+    )
+    # The frozen constants: byte-identical through the 04-09 change.
+    assert C.STAGE_POTENTIALS == (0.0, 0.15, 0.35, 0.60, 1.0)
+    assert C.TERMINAL_PLACE_BONUS == 10.0
+    assert C.TIME_PENALTY == 0.01
+    assert C.REWARD_GAMMA == 0.99
+    # The frozen 04-07 grasp predicate (the reward change touches only the
+    # two approach sub-term constants).
+    assert C.GRASP_CUBE_OFF_FLOOR_Z_M == 0.017
+    assert C.GRASP_WINDOW_STEPS == 2
+    assert C.GRASP_TRACK_TOL_M == 0.05
+
+    # Gradient semantics at the ramp endpoints (float64 clamp, exact where
+    # the arithmetic is; the ramp midpoint carries 1e-9 because 0.225 is
+    # not float-exact).
+    assert reward.potential(1, 0.0) == 0.30, (
+        "contact must pay the full sub-term: base 0.15 + W 0.15 == 0.30 "
+        "(the hover-guard boundary value)"
+    )
+    assert reward.potential(1, 0.10) == 0.15, (
+        "d == scale reads exactly the base (the clamp boundary)"
+    )
+    assert reward.potential(1, 0.25) == 0.15, (
+        "beyond the 0-10 cm band the sub-term is clamped — no gradient "
+        "outside the band"
+    )
+    assert abs(reward.potential(1, 0.05) - 0.225) < 1e-9, (
+        "the ramp midpoint must read base + W/2"
+    )
+    # The sub-term still drops entirely at the grasp rung — the pre/post-
+    # grasp Phi continuity the 04-07 audit window relies on.
+    assert reward.potential(2, 0.0) == 0.35
+    assert reward.potential(2, 0.25) == 0.35
+
+
+def test_04_09_hover_guard_margin():
+    """The hybrid guard under the NEW pins, asserted with its margin: the
+    best un-grasped Phi (approach rung + full sub-term) is
+    STAGE_POTENTIALS[1] + APPROACH_W == 0.30, strictly below the grasp rung
+    STAGE_POTENTIALS[2] == 0.35 with margin 0.05 — hovering near the cube
+    can still never out-earn an actual grasp under the strengthened
+    gradient (the 04-09 decision). Equality would pass the import-time
+    guard, so the margin itself is pinned explicitly here."""
+    assert C.STAGE_POTENTIALS[1] + C.APPROACH_W == 0.30, (
+        "the strengthened sub-term must land the best un-grasped Phi at "
+        "exactly 0.30 under the 04-09 pins"
+    )
+    assert C.STAGE_POTENTIALS[2] == 0.35
+    margin = C.STAGE_POTENTIALS[2] - (C.STAGE_POTENTIALS[1] + C.APPROACH_W)
+    assert margin == 0.05, (
+        f"the hover-guard margin must be 0.05 under the 04-09 pins, got "
+        f"{margin!r} — a zero/negative margin would re-open hover/push "
+        "incentives (the exact hazard the Phase 2 guard exists for)"
+    )
+    # Exercised at the boundary distance: the maximum sub-term payment sits
+    # strictly below the grasp rung.
+    assert reward.potential(1, 0.0) < C.STAGE_POTENTIALS[2]
+
+
+# ---------------------------------------------------------------------------
 # Fail-loudly validation (threat T-02-02)
 # ---------------------------------------------------------------------------
 

@@ -27,9 +27,12 @@ section 5; mechanism per runs/investigation-04-cve-groundwork.md):
   * the tamper guards (the identity split OBS_STATE_DIM=28 legacy /
     OBS_STATE_CV_DIM=32 training contract, the probe-measured bounds, the
     neutral, and the untouched 04-07 predicate pins);
-  * the judged chains match (train.resolve_env_kwargs AND
-    _eval_chain.build_eval_venv both construct cv_features=True — T-04-25:
-    the two chains that judge the baseline share one contract).
+  * the judged chains are RETIRED to the CNN-only 28-dim contract
+    (the 04-09 retirement — the flipped T-04-25 pin: train.resolve_env_kwargs
+    AND _eval_chain.build_eval_venv both construct the legacy layout with
+    NO CV kwarg; the 04-08 evidence bought parity at 3M at a worse first
+    run, so 04-07's CNN-only 13/25 is the best measured result; the CV
+    family itself stays DORMANT opt-in below, preserved and test-guarded).
 
 RED history: committed as 40650c3 in guarded RED form (every missing
 artifact converted to an in-body named failure); un-guarded into these
@@ -503,26 +506,33 @@ def test_cv_bounds_match_probe_artifact():
 # ---------------------------------------------------------------------------
 
 
-def test_judged_chains_share_the_cv_contract():
-    """train.resolve_env_kwargs (the training chain) AND
-    _eval_chain.build_eval_venv (the eval/audit chain) BOTH construct
-    cv_features=True — the two chains that judge the baseline share ONE
-    32-dim contract (a judged chain built on the wrong layout would
-    measure the wrong contract)."""
+def test_judged_chains_retired_to_cnn_only_contract():
+    """04-09 retirement (the flipped T-04-25 pin): train.resolve_env_kwargs
+    (the training chain) AND _eval_chain.build_eval_venv (the eval/audit
+    chain) BOTH construct the legacy 28-dim CNN-only layout with NO CV
+    entry — the 04-08 evidence (parity at 3M: 12/25 vs 04-07's CNN-only
+    13/25, at a worse first run: 3/25) retired the centroid tail from every
+    judged chain. The CV family itself stays DORMANT opt-in (its tests
+    above stay green unchanged); a 04-08 32-dim VecNormalize load on either
+    reverted chain still fails loudly (the cross-layout test pins both
+    directions — the failed-baseline CV bundles can never silently load)."""
     train = _load_train()
     gate = train.load_gate()
     kwargs = train.resolve_env_kwargs(gate)
-    assert kwargs["cv_features"] is True, (
-        "train.resolve_env_kwargs must construct cv_features=True — the "
-        "TRAINING chain is on the 04-08 CV observation contract"
+    assert "cv_features" not in kwargs, (
+        "train.resolve_env_kwargs must construct NO CV entry — the 04-09 "
+        "retirement puts the TRAINING chain on the 04-07 CNN-only 28-dim "
+        "contract"
     )
+    assert kwargs["obs_mode"] == C.OBS_MODE_VISION
+    assert kwargs["grayscale"] is True
 
     ec = _load_eval_chain()
     eval_venv = ec.build_eval_venv(gate)
     raw = eval_venv.envs[0].unwrapped
-    assert raw._cv_features is True, (
-        "build_eval_venv must construct cv_features=True — the EVAL chain "
-        "is on the 04-08 CV observation contract"
+    assert raw._cv_features is False, (
+        "build_eval_venv must construct NO CV entry — the 04-09 retirement "
+        "puts the EVAL chain on the 04-07 CNN-only 28-dim contract"
     )
-    assert raw.observation_space[C.OBS_STATE_KEY].shape == (C.OBS_STATE_CV_DIM,)
+    assert raw.observation_space[C.OBS_STATE_KEY].shape == (C.OBS_STATE_DIM,) == (28,)
     # WR-01: the eval vision env is never closed mid-process.

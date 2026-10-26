@@ -93,9 +93,15 @@ def test_resolved_config_matches_gate_and_constants():
     assert cfg["env_kwargs"]["obs_mode"] == C.OBS_MODE_VISION
     # OBS_DECISION D-05: vision-64x64-gray is the decided format.
     assert cfg["env_kwargs"]["grayscale"] is True
-    # 04-08: the training env kwargs construct the CV observation contract
-    # (the judged training chain is on the 32-dim CV state key).
-    assert cfg["env_kwargs"]["cv_features"] is True
+    # 04-09 retirement: the judged training chain constructs the 04-07
+    # CNN-only 28-dim contract — the cv_features key is ABSENT from the
+    # training env kwargs (the 04-08 CV tail is retired by evidence: parity
+    # at 3M, worse first run; the bundle's config.json records no CV entry).
+    assert "cv_features" not in cfg["env_kwargs"], (
+        "the 04-09 retirement removed the CV entry from the training env "
+        "kwargs — the judged training chain is the 04-07 CNN-only 28-dim "
+        "contract"
+    )
 
     # The seed comes from the gate and is recorded in the resolved config.
     assert cfg["seed"] == gate["tuning"]["seed"] == 0
