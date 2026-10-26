@@ -212,7 +212,10 @@ def test_04_09_hover_guard_margin():
     )
     assert C.STAGE_POTENTIALS[2] == 0.35
     margin = C.STAGE_POTENTIALS[2] - (C.STAGE_POTENTIALS[1] + C.APPROACH_W)
-    assert margin == 0.05, (
+    # pytest.approx(1e-9): 0.35 - 0.30 is 0.04999999999999999 in float64 —
+    # the pinned margin is decimal semantics, never a float-exact promise
+    # (the 04-09 plan's precision contract).
+    assert margin == pytest.approx(0.05, abs=1e-9), (
         f"the hover-guard margin must be 0.05 under the 04-09 pins, got "
         f"{margin!r} — a zero/negative margin would re-open hover/push "
         "incentives (the exact hazard the Phase 2 guard exists for)"

@@ -189,13 +189,54 @@ STAGE_POTENTIALS: tuple[float, ...] = (0.0, 0.15, 0.35, 0.60, 1.0)
 # 0, 1)) — active only while stage_index < 2, keeps Phi informative before
 # any flag flips (RESEARCH A3) without threatening stage monotonicity (the
 # guard STAGE_POTENTIALS[1] + APPROACH_W <= STAGE_POTENTIALS[2] is
-# import-time validated). 0.05 = a small slice of the 1.0 shapable budget.
-APPROACH_W: float = 0.05
+# import-time validated).
+#
+# 04-09 pre-agreement (the user's fourth D-03 decision, made 2026-10-24,
+# ranked option 4 in runs/investigation-04-cvtrack.md section 5): the
+# addendum ranked the reward-structure change LEAST INDICATED — quoted
+# verbatim: "the shaping demonstrably teaches carrying under both
+# contracts (audit returns +9.6..+10.0); the frozen constants and the
+# 2.5/6.0 audit-bound derivation should not be re-opened on this
+# evidence" — and the user OVERRIDED that ranking with it in full view;
+# this pin records the override, never an evidence-indicated
+# recommendation. The failure diagnosis the change attacks: across all
+# six missed runs the unsolved spawns produce no-progress episodes (raw
+# return ~= -2.2, the time-penalty floor, full-length GIFs, no stage
+# advance). Under the frozen 0.05/0.20 pair the approach gradient was
+# 0.05/0.20 = 0.25 Phi/m, so a representative 1-cm-per-control-step
+# approach move (20 cm/s at the 20 Hz control rate) netted 0.0025 - 0.01
+# = -0.0075 per step — sustained reaching toward the cube was locally
+# PENALIZED until a discrete flag flipped. The 04-09 change (the ONLY
+# reward-structure change): APPROACH_W 0.05 -> 0.15 with the scale
+# 0.20 -> 0.10 gives a 1.5 Phi/m gradient — the same move now nets
+# 0.015 - 0.01 = +0.005 per step (locally rewarding), the ramp
+# concentrates on the 0-10 cm home-to-cube distance band (the measured
+# ~2.87 cm home-to-spawn note in APPROACH_DIST_M's docstring), and far
+# spawns expose MORE reachable gradient than near ones (0.045 at d=0.03
+# vs 0.09 at d=0.06 earnable) — the signal now discriminates spawn
+# distance, which is what grid generalization needs. The hybrid guard
+# holds with margin: STAGE_POTENTIALS[1] + APPROACH_W = 0.30 <=
+# STAGE_POTENTIALS[2] = 0.35 (margin 0.05 — hovering can still never
+# out-earn a grasp); the potential-based form is untouched (Ng/Harada/
+# Russell invariance holds; the 28/28 audit re-proves the telescoping
+# identity and the approach-retreat negative control under the 6x
+# stronger sub-term). Derivation re-derived in-test:
+# tests/test_reward.py::test_04_09_approach_gradient_pins,
+# tests/test_train_gate.py::test_audit_bounds_derivation (the 1.15 < 2.0
+# sub-term-ceiling row).
+APPROACH_W: float = 0.15
 
-# Distance normalizer for the approach sub-term [m]: the sub-term ramps to 0
-# as the horizontal gripper-to-cube distance grows past ~2x the spawn-patch
-# offset scale — round number, covers home-to-cube stand-off.
-APPROACH_POTENTIAL_SCALE_M: float = 0.20
+# Distance normalizer for the approach sub-term [m] — 04-09 pre-agreement
+# (the same decision, see APPROACH_W above): 0.20 -> 0.10 concentrates the
+# ramp on the 0-10 cm band, the actual home-to-cube distance range (no
+# spawn exceeds it); distances beyond 10 cm read 0. The gradient pair is
+# 0.15/0.10 = 1.5 Phi/m (6x the frozen 0.25). The hover-guard margin and
+# the audit-bound derivation survive the change by arithmetic:
+# max(STAGE_POTENTIALS) + APPROACH_W = 1.15 < the 2.0 dense ceiling, and
+# the 2.5/6.0 audit bounds re-derive unchanged (their inputs —
+# TERMINAL_PLACE_BONUS / TIME_PENALTY / FULL_FLAGS_NO_PLACE_MAX_FRACTION
+# / the 200-step horizon — are all frozen).
+APPROACH_POTENTIAL_SCALE_M: float = 0.10
 
 # Terminal place bonus (D-06 terminal dominance): 10x the 1.0 total shapable
 # potential, paid exactly ONCE on the step the place flag first sets —
@@ -258,14 +299,15 @@ OBS_N_STACK: int = 4
 #   [16:22] cube qvel (6D linear + angular)              D-03
 #   [22:25] gripper-pad-midpoint -> cube 3D offset       D-02
 #   [25:28] cube -> goal 3D offset                       D-02
-# IDENTITY SPLIT (04-08): OBS_STATE_DIM=28 is the LEGACY/DEFAULT
-# contract — every Phase 1/2 runner (benchmark, reward audit, physics
-# gate) and the smoke runner construct it unchanged and their measured
-# numbers stay reproducible. The CV family pinned below is OPT-IN
-# (cv_features=True); the two judged Phase 4 chains (training +
-# eval/audit) construct the CV layout, and a cross-layout bundle load
-# fails loudly (VecNormalize shape mismatch) — the 04-05/04-06/04-07
-# failed-baseline bundles were never reference points.
+# IDENTITY SPLIT (04-08, retired 04-09): OBS_STATE_DIM=28 is the
+# LEGACY/DEFAULT contract — every Phase 1/2 runner (benchmark, reward
+# audit, physics gate) and the smoke runner construct it unchanged and
+# their measured numbers stay reproducible. The CV family pinned below is
+# OPT-IN (cv_features=True) and, since the 04-09 retirement, DORMANT: the
+# two judged Phase 4 chains (training + eval/audit) construct THIS 28-dim
+# layout, and a cross-layout bundle load fails loudly (VecNormalize shape
+# mismatch) — the 04-05..04-08 failed-baseline bundles were never
+# reference points.
 # COSTLY to change: VecNormalize statistics, PPO feature extractors, and
 # every Phase 4/6 checkpoint consume a layout; changing it after training
 # starts invalidates checkpoints.
@@ -283,7 +325,24 @@ OBS_STATE_DIM: int = 28
 # so100rob.cv_features as a PURE-numpy function of the rendered RGB frame
 # ONLY (T-04-23: never simulator state), from the SAME single render the
 # image key uses (one render per step, extracted before the grayscale
-# conversion). Phase 5's sensor-noise wrapper consumes this 32-dim layout.
+# conversion).
+#
+# 04-09 RETIREMENT (option 5 of runs/investigation-04-cvtrack.md section 5,
+# folded into the user's 2026-10-24 option-4 pre-agreement): the judged
+# chains (training via scripts/train.py resolve_env_kwargs, eval/audit via
+# scripts/_eval_chain.py build_eval_venv) NO LONGER construct the CV
+# layout — they are back on the 04-07 CNN-only 28-dim contract
+# (OBS_STATE_DIM). The retirement is evidence-based: the centroid channels
+# bought PARITY with 04-07's CNN-only 13/25 at the 3M retry (12/25) at a
+# worse first-run cost (3/25), so CNN-only is the best measured result and
+# the rollback target. The CV family stays DORMANT opt-in (this module,
+# the env kwarg, the constants below, scripts/probe_cv_features.py, the
+# opt-in tests) — preserved, not deleted; a future re-activation is a NEW
+# pre-agreement, never a rebuild. Phase 5's sensor-noise wrapper consumes
+# the 28-dim layout (the judged contract). A cross-layout bundle load
+# still fails loudly in both directions (VecNormalize shape mismatch) —
+# the failed-baseline CV bundles can never silently load on a judged
+# chain.
 OBS_CV_FEATURE_DIM: int = 4
 # The training-contract pin (the state-key dimensionality the judged
 # chains construct). C-sum form on purpose: the identity

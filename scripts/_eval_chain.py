@@ -24,11 +24,16 @@ The frozen spawn grid is READ from so100rob.constants.SPAWN_SEEDS_PATH
 fix — config/spawn_seeds.json is the stale pre-move path) and never
 re-derived at runtime.
 
-OBS CONTRACT (04-08): build_eval_venv constructs cv_features=True — the
-32-dim CV state key (OBS_STATE_CV_DIM, the measured color-blob centroid
-tail at indices [28:32]) — mirroring train.resolve_env_kwargs so the two
-judged chains share ONE contract (T-04-25). A legacy 28-dim bundle load
-on this chain fails loudly at VecNormalize.load (shape mismatch).
+OBS CONTRACT (04-09 retirement): build_eval_venv constructs the 04-07
+CNN-only 28-dim state key (OBS_STATE_DIM) — the 04-08 CV-centroid tail is
+retired from every judged chain by evidence (parity with 04-07's CNN-only
+13/25 at the 3M retry, at a worse first-run cost), mirroring
+train.resolve_env_kwargs so the two judged chains share ONE legacy
+contract (the flipped T-04-25 pin). The CV family stays dormant opt-in
+(the env kwarg, so100rob.cv_features, and the probe script are preserved
+unchanged). A 32-dim CV bundle load on this reverted chain fails loudly
+at VecNormalize.load (shape mismatch) — the 04-08 failed-baseline bundles
+can never silently load.
 """
 
 from __future__ import annotations
@@ -163,7 +168,8 @@ def build_eval_venv(gate: dict, n_envs: int = 1):
             obs_mode=C.OBS_MODE_VISION,
             grayscale=GRAYSCALE,
             spawn_mode=EVAL_SPAWN_MODE,
-            cv_features=True,  # 04-08: the judged eval chain is on the CV contract (T-04-25)
+            # 04-09 retirement: no CV entry — the judged eval chain is on
+            # the 04-07 CNN-only 28-dim contract (the flipped T-04-25 pin).
         )
         # Monitor FIRST (training order), logging the RAW task return
         # below VecNormalize (04-RESEARCH Pattern 3).
